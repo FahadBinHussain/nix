@@ -30,7 +30,7 @@ jobs:
           
           # 1. Ask WinGet for the latest version info
           Write-Host "Querying Microsoft Store for ID: $productId..."
-          $info = winget show --id $productId --exact --source msstore --accept-source-agreements --accept-package-agreements --disable-interactivity 2>&1 | Out-String
+          $info = winget show --id $productId --exact --source msstore --accept-source-agreements --disable-interactivity 2>&1 | Out-String
           if ($LASTEXITCODE -ne 0) {
               Write-Host "Error: 'winget show' failed."
               Write-Host $info
@@ -61,11 +61,17 @@ jobs:
 
           # 2. Compare with memory
           $latestKnown = "${{ env.CURRENT_MEM }}".Trim()
-          if ($version -eq $latestKnown) {
+          $versionIsUsable = ($version -and $version -ne "Unknown")
+
+          if ($versionIsUsable -and $version -eq $latestKnown) {
               Write-Host "App is up to date. Skipping."
               Add-Content -Path $env:GITHUB_ENV -Value "SKIP_UPLOAD=true"
           } else {
-              Write-Host "New version detected ($version). Starting download..."
+              if (-not $versionIsUsable) {
+                  Write-Host "Version is unknown from Store metadata; proceeding with download and using filename as memory marker."
+              } else {
+                  Write-Host "New version detected ($version). Starting download..."
+              }
               
               # 3. Download the file directly from Microsoft
               # This saves the .msix/.appx to the current directory
@@ -84,7 +90,11 @@ jobs:
               
               Add-Content -Path $env:GITHUB_ENV -Value "SKIP_UPLOAD=false"
               Add-Content -Path $env:GITHUB_ENV -Value "FILE_NAME=$($file.Name)"
-              Add-Content -Path $env:GITHUB_ENV -Value "FILE_VERSION=$version"
+              if ($versionIsUsable) {
+                  Add-Content -Path $env:GITHUB_ENV -Value "FILE_VERSION=$version"
+              } else {
+                  Add-Content -Path $env:GITHUB_ENV -Value "FILE_VERSION=$($file.Name)"
+              }
           }
 
       - name: Upload to uDrop
