@@ -120,10 +120,25 @@ jobs:
           
           $Token = if ($AuthRes.access_token) { $AuthRes.access_token } else { $AuthRes.response.access_token }
           $AccId = if ($AuthRes.account_id) { $AuthRes.account_id } else { $AuthRes.response.account_id }
-          
-          $Form = @{ access_token = $Token; account_id = $AccId; upload_file = Get-Item -Path $env:FILE_NAME }
-          $UploadRes = Invoke-RestMethod -Uri "https://www.udrop.com/api/v2/file/upload" -Method Post -Form $Form
+
+          if (-not $Token -or -not $AccId) {
+            Write-Host "uDrop auth failed."
+            exit 1
+          }
+
+          # PowerShell 5.1 does not support Invoke-RestMethod -Form. Use curl.exe multipart upload.
+          $uploadResult = curl.exe -sS -X POST "https://www.udrop.com/api/v2/file/upload" `
+            -F "access_token=$Token" `
+            -F "account_id=$AccId" `
+            -F "upload_file=@$env:FILE_NAME"
+
+          if ($LASTEXITCODE -ne 0) {
+            Write-Host "Upload failed."
+            exit 1
+          }
+
           Write-Host "Upload Complete!"
+          Write-Host $uploadResult
 
       - name: Update Memory Branch
         if: env.SKIP_UPLOAD == 'false'
