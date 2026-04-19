@@ -1,4 +1,4 @@
-name: Nix Auto-Updater to uDrop
+name: Nix Debug-Updater
 
 on:
   schedule:
@@ -20,46 +20,29 @@ jobs:
         shell: bash
         run: |
           git fetch origin bot-memory || true
-          git checkout origin/bot-memory -- latest_version.txt || echo "" > latest_version.txt
+          git checkout origin/bot-memory -- latest_version.txt || echo "none" > latest_version.txt
+          echo "CURRENT_MEM=$(cat latest_version.txt)" >> $GITHUB_ENV
 
-      - name: Check Store API (Bypass Cloudflare)
+      - name: Check Store API
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
           $productId = "${{ secrets.PRODUCT_ID }}"
-          
-          # 1. Define a modern browser User-Agent
           $UserAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36"
           
-          Write-Host "Fetching links for Product ID: $productId using Stealth headers..."
-          
-          # 2. Use curl.exe directly with custom headers to bypass simple bot detection
           $Response = curl.exe -s -X POST "https://store.rg-adguard.net/api/GetFiles" `
             -H "Content-Type: application/x-www-form-urlencoded" `
             -H "User-Agent: $UserAgent" `
-            -H "Referer: https://store.rg-adguard.net/" `
-            -H "Origin: https://store.rg-adguard.net" `
             --data-binary "type=ProductId&url=$productId&ring=Retail&lang=en-US"
 
-          # Check if we got the "Just a moment" block again
-          if ($Response -match "Just a moment" -or $Response -match "cloudflare") {
-              Write-Host "Error: Cloudflare is still blocking the request. It requires a JavaScript challenge solver."
-              exit 1
-          }
-
-          # 3. Extract links from the raw HTML response
           $Links = [regex]::Matches($Response, '<a href="(.*?)".*?>(.*?)<\/a>')
-          
-          $TargetUrl = ""
-          $TargetName = ""
+          $TargetUrl = ""; $TargetName = ""
           
           foreach ($Link in $Links) {
               $Url = $Link.Groups[1].Value
               $Filename = $Link.Groups[2].Value
               if ($Filename -match "\.msixbundle$" -or $Filename -match "\.appxbundle$") {
-                  $TargetUrl = $Url
-                  $TargetName = $Filename
-                  break
+                  $TargetUrl = $Url; $TargetName = $Filename; break
               }
           }
           
@@ -69,26 +52,21 @@ jobs:
                  $Filename = $Link.Groups[2].Value
                  if (($Filename -match "\.msix$" -or $Filename -match "\.appx$") -and ($Filename -notmatch "\.BlockMap$")) {
                      if ($Filename -match "_x64_" -or $Filename -match "_neutral_") {
-                         $TargetUrl = $Url
-                         $TargetName = $Filename
-                         break
+                         $TargetUrl = $Url; $TargetName = $Filename; break
                      }
                  }
              }
           }
-          
-          if ($TargetUrl -eq "") {
-              Write-Host "Error: Could not find valid package links in the API response."
-              exit 1
-          }
 
-          # Check against memory
-          $LatestKnown = (Get-Content "latest_version.txt" -Raw).Trim()
+          $LatestKnown = "$env:CURRENT_MEM".Trim()
+          Write-Host "Store Version: $TargetName"
+          Write-Host "Memory Version: $LatestKnown"
+
           if ($TargetName -eq $LatestKnown) {
-              Write-Host "App is up-to-date ($TargetName). Skipping."
+              Write-Host ">>> MATCH FOUND: Skipping upload to save uDrop space."
               Add-Content -Path $env:GITHUB_ENV -Value "SKIP_UPLOAD=true"
           } else {
-              Write-Host "New version: $TargetName"
+              Write-Host ">>> NEW VERSION: Proceeding to upload."
               Add-Content -Path $env:GITHUB_ENV -Value "SKIP_UPLOAD=false"
               Add-Content -Path $env:GITHUB_ENV -Value "TARGET_URL=$TargetUrl"
           }
@@ -98,21 +76,34 @@ jobs:
         if: env.SKIP_UPLOAD == 'false'
         shell: pwsh
         run: |
-          # Use curl -L to follow redirects from Microsoft's CDN
+          Write-Host "Downloading $($env:FILE_NAME)..."
           curl.exe -L -o "$($env:FILE_NAME)" "$($env:TARGET_URL)"
+          $size = (Get-Item "$($env:FILE_NAME)").Length / 1MB
+          Write-Host "Download Complete. Size: $size MB"
 
       - name: Upload Package to uDrop
         if: env.SKIP_UPLOAD == 'false'
         shell: pwsh
         run: |
+          Write-Host "Starting uDrop Upload Process..."
           $AuthBody = @{ key1 = "${{ secrets.UDROP_KEY1 }}"; key2 = "${{ secrets.UDROP_KEY2 }}" }
           $AuthResponse = Invoke-RestMethod -Uri "https://www.udrop.com/api/v2/authorize" -Method Post -Body $AuthBody
+          
           $AccessToken = if ($AuthResponse.access_token) { $AuthResponse.access_token } else { $AuthResponse.response.access_token }
           $AccountId = if ($AuthResponse.account_id) { $AuthResponse.account_id } else { $AuthResponse.response.account_id }
 
           $Form = @{ access_token = $AccessToken; account_id = $AccountId; upload_file = Get-Item -Path $env:FILE_NAME }
-          Invoke-RestMethod -Uri "https://www.udrop.com/api/v2/file/upload" -Method Post -Form $Form
-          Write-Host "Upload Complete!"
+          $UploadResponse = Invoke-RestMethod -Uri "https://www.udrop.com/api/v2/file/upload" -Method Post -Form $Form
+          
+          Write-Host "uDrop API Response:"
+          $UploadResponse | ConvertTo-Json | Write-Host
+          
+          if ($UploadResponse.status -eq "success" -or $UploadResponse._status -eq "success") {
+             Write-Host "Upload confirmed by uDrop!"
+          } else {
+             Write-Host "uDrop Error: $($UploadResponse.response)"
+             exit 1
+          }
 
       - name: Save Memory to Hidden Branch
         if: env.SKIP_UPLOAD == 'false'
@@ -120,8 +111,8 @@ jobs:
         run: |
           git config --global user.name "github-actions[bot]"
           git config --global user.email "github-actions[bot]@users.noreply.github.com"
-          git checkout --orphan bot-memory
-          git rm -rf .
+          git checkout --orphan bot-memory || git checkout bot-memory
+          git rm -rf . || true
           echo "${{ env.FILE_NAME }}" > latest_version.txt
           git add latest_version.txt
           git commit -m "Memory update: ${{ env.FILE_NAME }}"
