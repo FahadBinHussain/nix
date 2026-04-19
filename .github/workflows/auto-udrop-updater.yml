@@ -1,4 +1,4 @@
-name: Nix - MS Store Mirror
+name: Nix - Premium MS Store Mirror
 
 on:
   schedule:
@@ -33,7 +33,7 @@ jobs:
           git checkout origin/bot-memory -- latest_version.txt || echo "none" > latest_version.txt
           echo "CURRENT_MEM=$(cat latest_version.txt)" >> $GITHUB_ENV
 
-      - name: Scrape Store Link (Bypass Cloudflare)
+      - name: Scrape Store Link (Playwright Bypass)
         id: scraper
         env:
           PRODUCT_ID: ${{ secrets.PRODUCT_ID }}
@@ -42,10 +42,13 @@ jobs:
           const { chromium } = require('playwright');
           (async () => {
             const browser = await chromium.launch({ headless: true });
-            const page = await browser.newPage();
             
-            // Mask as a real browser
-            await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36');
+            // Correct Playwright way to set User-Agent
+            const context = await browser.newContext({
+              userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36'
+            });
+            
+            const page = await context.newPage();
             
             console.log('Navigating to Store API...');
             await page.goto('https://store.rg-adguard.net/', { waitUntil: 'networkidle' });
@@ -56,14 +59,15 @@ jobs:
             
             console.log('Waiting for results (Handling Cloudflare)...');
             try {
-              // Wait up to 60s for the results table to appear (Cloudflare bypass window)
+              // Wait up to 60s for the results table to appear
               await page.waitForSelector('table.table', { timeout: 60000 });
-              
+              await page.waitForTimeout(2000); // Small buffer for rendering
+
               const links = await page.\$\$eval('table.table a', anchors => 
                 anchors.map(a => ({ href: a.href, text: a.innerText }))
               );
               
-              // Find Bundle or x64
+              // Find the best package (Bundle or x64)
               let target = links.find(l => l.text.endsWith('.msixbundle') || l.text.endsWith('.appxbundle'));
               if (!target) {
                 target = links.find(l => (l.text.includes('_x64_') || l.text.includes('_neutral_')) && 
@@ -77,7 +81,7 @@ jobs:
                 fs.appendFileSync(process.env.GITHUB_ENV, 'FILE_NAME=' + target.text + '\n');
                 fs.appendFileSync(process.env.GITHUB_ENV, 'TARGET_URL=' + target.href + '\n');
               } else {
-                console.error('FAILED: No valid links found in the table.');
+                console.error('FAILED: No valid links found.');
                 process.exit(1);
               }
             } catch (e) {
@@ -112,34 +116,29 @@ jobs:
           AUTH_RES=$(curl -s -X POST "https://www.udrop.com/api/v2/authorize" \
             -d "key1=${{ secrets.UDROP_KEY1 }}&key2=${{ secrets.UDROP_KEY2 }}")
           
-          # Use Python to safely extract JSON tokens
+          # Extract tokens via Python for reliability
           TOKEN=$(echo $AUTH_RES | python3 -c "import sys, json; data=json.load(sys.stdin); print(data.get('access_token') or data.get('response', {}).get('access_token', ''))")
           ACC_ID=$(echo $AUTH_RES | python3 -c "import sys, json; data=json.load(sys.stdin); print(data.get('account_id') or data.get('response', {}).get('account_id', ''))")
           
           if [ -z "$TOKEN" ]; then echo "Auth Failed: $AUTH_RES"; exit 1; fi
 
-          echo "Uploading to uDrop Account: $ACC_ID..."
-          UPLOAD_RES=$(curl -X POST "https://www.udrop.com/api/v2/file/upload" \
+          echo "Uploading to uDrop (ID: $ACC_ID)..."
+          curl -X POST "https://www.udrop.com/api/v2/file/upload" \
             -F "access_token=$TOKEN" \
             -F "account_id=$ACC_ID" \
-            -F "upload_file=@${{ env.FILE_NAME }}")
-          
-          echo "uDrop Response: $UPLOAD_RES"
+            -F "upload_file=@${{ env.FILE_NAME }}"
 
       - name: Update Hidden Memory Branch
         if: env.SKIP_UPLOAD == 'false'
         run: |
           git config --global user.name "github-actions[bot]"
           git config --global user.email "github-actions[bot]@users.noreply.github.com"
-          
-          # Switch to/Create the bot-memory branch
           git checkout --orphan bot-memory || git checkout bot-memory
-          
-          # Wipe code from this branch to keep it 100% clean
           git rm -rf . || true
-          
-          # Save only the filename
           echo "${{ env.FILE_NAME }}" > latest_version.txt
           git add latest_version.txt
-          git commit -m "Nix Update: ${{ env.FILE_NAME }}"
+          git commit -m "Nix Memory Update: ${{ env.FILE_NAME }}"
           git push origin bot-memory --force
+
+      - name: Keep Workflow Alive
+        uses: gautamkrishnar/keepalive-workflow@v2
