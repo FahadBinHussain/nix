@@ -157,6 +157,6 @@ jobs:
           git commit -m "Memory update: ${{ env.FILE_NAME }}"
           git push origin bot-memory --force
 
-      - name: Keep Workflow Alive
-        uses: gautamkrishnar/keepalive-workflow@v2
-        # This prevents GitHub from disabling the cron job after 60 days of human inactivity
+      # - name: Keep Workflow Alive
+      #   uses: gautamkrishnar/keepalive-workflow@v2
+      #   # This prevents GitHub from disabling the cron job after 60 days of human inactivity
