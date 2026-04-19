@@ -59,8 +59,30 @@ jobs:
             
             console.log('Waiting for results (Handling Cloudflare)...');
             try {
-              // Wait up to 60s for the results table to appear
-              await page.waitForSelector('table.table', { timeout: 60000 });
+              // Cloudflare and anti-bot checks can delay the results table.
+              // Poll until table appears (up to 3 minutes) while allowing challenge pages to clear.
+              const maxWaitMs = 180000;
+              const start = Date.now();
+              while (Date.now() - start < maxWaitMs) {
+                const tableVisible = await page.locator('table.table').first().isVisible().catch(() => false);
+                if (tableVisible) break;
+
+                const title = await page.title().catch(() => '');
+                const bodyText = await page.locator('body').innerText().catch(() => '');
+                const hasChallenge = /cloudflare|just a moment|verify you are human|checking your browser/i.test(title + ' ' + bodyText);
+                if (hasChallenge) {
+                  console.log('Cloudflare challenge detected, waiting...');
+                }
+
+                await page.waitForTimeout(3000);
+              }
+
+              const tableVisible = await page.locator('table.table').first().isVisible().catch(() => false);
+              if (!tableVisible) {
+                const finalTitle = await page.title().catch(() => 'unknown');
+                throw new Error('Results table did not appear within 180s. Last page title: ' + finalTitle);
+              }
+
               await page.waitForTimeout(2000); // Small buffer for rendering
 
               const links = await page.\$\$eval('table.table a', anchors => 
