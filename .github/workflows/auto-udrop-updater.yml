@@ -1,30 +1,20 @@
-name: Nix - Premium MS Store Mirror
+name: Nix - Official Mirror
 
 on:
   schedule:
-    - cron: '0 0 * * *' # Runs daily at Midnight UTC
-  workflow_dispatch: # Allows manual trigger
+    - cron: '0 0 * * *'
+  workflow_dispatch:
 
 permissions:
   contents: write
 
 jobs:
-  nix-process:
-    runs-on: ubuntu-latest
+  nix-sync:
+    runs-on: windows-latest
 
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v4
-
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: 20
-
-      - name: Install Playwright
-        run: |
-          npm install playwright
-          npx playwright install chromium --with-deps
 
       - name: Restore Memory from Hidden Branch
         shell: bash
@@ -33,148 +23,68 @@ jobs:
           git checkout origin/bot-memory -- latest_version.txt || echo "none" > latest_version.txt
           echo "CURRENT_MEM=$(cat latest_version.txt)" >> $GITHUB_ENV
 
-      - name: Scrape Store Link (Playwright Bypass)
-        id: scraper
-        env:
-          PRODUCT_ID: ${{ secrets.PRODUCT_ID }}
+      - name: Fetch App via WinGet
+        shell: powershell
         run: |
-          node -e "
-          const { chromium } = require('playwright');
-          (async () => {
-            const browser = await chromium.launch({ headless: true });
-            
-            // Correct Playwright way to set User-Agent
-            const context = await browser.newContext({
-              userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36'
-            });
-            
-            const page = await context.newPage();
-            page.setDefaultTimeout(120000);
-            
-            console.log('Navigating to Store API...');
-            let navOk = false;
-            for (let attempt = 1; attempt <= 3; attempt++) {
-              try {
-                await page.goto('https://store.rg-adguard.net/', { waitUntil: 'domcontentloaded', timeout: 120000 });
-                navOk = true;
-                break;
-              } catch (err) {
-                console.log('Navigation attempt ' + attempt + ' failed: ' + err.message);
-                if (attempt < 3) {
-                  await page.waitForTimeout(5000);
-                }
-              }
-            }
-            if (!navOk) {
-              throw new Error('Unable to open store.rg-adguard.net after 3 attempts.');
-            }
-            
-            await page.fill('#url', process.env.PRODUCT_ID);
-            await page.selectOption('#ring', 'Retail');
-            await page.click('input[type=\"button\"]');
-            
-            console.log('Waiting for results (Handling Cloudflare)...');
-            try {
-              // Cloudflare and anti-bot checks can delay the results table.
-              // Poll until table appears (up to 3 minutes) while allowing challenge pages to clear.
-              const maxWaitMs = 180000;
-              const start = Date.now();
-              while (Date.now() - start < maxWaitMs) {
-                const tableVisible = await page.locator('table.table').first().isVisible().catch(() => false);
-                if (tableVisible) break;
+          $productId = "${{ secrets.PRODUCT_ID }}"
+          
+          # 1. Ask WinGet for the latest version info
+          Write-Host "Querying Microsoft Store for ID: $productId..."
+          $info = winget show --id $productId --source msstore | Out-String
+          
+          # Extract the version number
+          if ($info -match "Version:\s+([^\s\r\n]+)") {
+              $version = $Matches[1]
+              Write-Host "Latest Version found: $version"
+          } else {
+              Write-Host "Error: Could not find version info."
+              exit 1
+          }
 
-                const title = await page.title().catch(() => '');
-                const bodyText = await page.locator('body').innerText().catch(() => '');
-                const hasChallenge = /cloudflare|just a moment|verify you are human|checking your browser/i.test(title + ' ' + bodyText);
-                if (hasChallenge) {
-                  console.log('Cloudflare challenge detected, waiting...');
-                }
-
-                await page.waitForTimeout(3000);
-              }
-
-              const tableVisible = await page.locator('table.table').first().isVisible().catch(() => false);
-              if (!tableVisible) {
-                const finalTitle = await page.title().catch(() => 'unknown');
-                throw new Error('Results table did not appear within 180s. Last page title: ' + finalTitle);
-              }
-
-              await page.waitForTimeout(2000); // Small buffer for rendering
-
-              const links = await page.\$\$eval('table.table a', anchors => 
-                anchors.map(a => ({ href: a.href, text: a.innerText }))
-              );
+          # 2. Compare with memory
+          $latestKnown = "${{ env.CURRENT_MEM }}".Trim()
+          if ($version -eq $latestKnown) {
+              Write-Host "App is up to date. Skipping."
+              Add-Content -Path $env:GITHUB_ENV -Value "SKIP_UPLOAD=true"
+          } else {
+              Write-Host "New version detected ($version). Starting download..."
               
-              // Find the best package (Bundle or x64)
-              let target = links.find(l => l.text.endsWith('.msixbundle') || l.text.endsWith('.appxbundle'));
-              if (!target) {
-                target = links.find(l => (l.text.includes('_x64_') || l.text.includes('_neutral_')) && 
-                                          (l.text.endsWith('.msix') || l.text.endsWith('.appx')) &&
-                                          !l.text.endsWith('.BlockMap'));
-              }
+              # 3. Download the file directly from Microsoft
+              # This saves the .msix/.appx to the current directory
+              winget download --id $productId --source msstore --download-directory .
               
-              if (target) {
-                console.log('SUCCESS: Found ' + target.text);
-                const fs = require('fs');
-                fs.appendFileSync(process.env.GITHUB_ENV, 'FILE_NAME=' + target.text + '\n');
-                fs.appendFileSync(process.env.GITHUB_ENV, 'TARGET_URL=' + target.href + '\n');
-              } else {
-                console.error('FAILED: No valid links found.');
-                process.exit(1);
-              }
-            } catch (e) {
-              console.error('CRITICAL ERROR: ' + e.message);
-              process.exit(1);
-            }
-            await browser.close();
-          })();
-          "
+              # Find the file name (WinGet names it based on the ID/Version)
+              $file = Get-ChildItem -Include *.msix, *.msixbundle, *.appxbundle -Recurse | Select-Object -First 1
+              
+              Add-Content -Path $env:GITHUB_ENV -Value "SKIP_UPLOAD=false"
+              Add-Content -Path $env:GITHUB_ENV -Value "FILE_NAME=$($file.Name)"
+              Add-Content -Path $env:GITHUB_ENV -Value "FILE_VERSION=$version"
+          }
 
-      - name: Version Comparison
-        run: |
-          STORE_VER="${{ env.FILE_NAME }}"
-          MEM_VER="${{ env.CURRENT_MEM }}"
-          echo "Comparing Store ($STORE_VER) with Memory ($MEM_VER)"
-          
-          if [ "$STORE_VER" == "$MEM_VER" ]; then
-            echo "SKIP_UPLOAD=true" >> $GITHUB_ENV
-            echo "Status: Up to date."
-          else
-            echo "SKIP_UPLOAD=false" >> $GITHUB_ENV
-            echo "Status: New version found."
-          fi
-
-      - name: Mirror to uDrop
+      - name: Upload to uDrop
         if: env.SKIP_UPLOAD == 'false'
+        shell: powershell
         run: |
-          echo "Downloading ${{ env.FILE_NAME }}..."
-          curl -L -o "${{ env.FILE_NAME }}" "${{ env.TARGET_URL }}"
+          Write-Host "Mirroring $($env:FILE_NAME) to uDrop..."
+          $AuthBody = @{ key1 = "${{ secrets.UDROP_KEY1 }}"; key2 = "${{ secrets.UDROP_KEY2 }}" }
+          $AuthRes = Invoke-RestMethod -Uri "https://www.udrop.com/api/v2/authorize" -Method Post -Body $AuthBody
           
-          echo "Authenticating with uDrop..."
-          AUTH_RES=$(curl -s -X POST "https://www.udrop.com/api/v2/authorize" \
-            -d "key1=${{ secrets.UDROP_KEY1 }}&key2=${{ secrets.UDROP_KEY2 }}")
+          $Token = if ($AuthRes.access_token) { $AuthRes.access_token } else { $AuthRes.response.access_token }
+          $AccId = if ($AuthRes.account_id) { $AuthRes.account_id } else { $AuthRes.response.account_id }
           
-          # Extract tokens via Python for reliability
-          TOKEN=$(echo $AUTH_RES | python3 -c "import sys, json; data=json.load(sys.stdin); print(data.get('access_token') or data.get('response', {}).get('access_token', ''))")
-          ACC_ID=$(echo $AUTH_RES | python3 -c "import sys, json; data=json.load(sys.stdin); print(data.get('account_id') or data.get('response', {}).get('account_id', ''))")
-          
-          if [ -z "$TOKEN" ]; then echo "Auth Failed: $AUTH_RES"; exit 1; fi
+          $Form = @{ access_token = $Token; account_id = $AccId; upload_file = Get-Item -Path $env:FILE_NAME }
+          $UploadRes = Invoke-RestMethod -Uri "https://www.udrop.com/api/v2/file/upload" -Method Post -Form $Form
+          Write-Host "Upload Complete!"
 
-          echo "Uploading to uDrop (ID: $ACC_ID)..."
-          curl -X POST "https://www.udrop.com/api/v2/file/upload" \
-            -F "access_token=$TOKEN" \
-            -F "account_id=$ACC_ID" \
-            -F "upload_file=@${{ env.FILE_NAME }}"
-
-      - name: Update Hidden Memory Branch
+      - name: Update Memory Branch
         if: env.SKIP_UPLOAD == 'false'
+        shell: bash
         run: |
           git config --global user.name "github-actions[bot]"
           git config --global user.email "github-actions[bot]@users.noreply.github.com"
           git checkout --orphan bot-memory || git checkout bot-memory
           git rm -rf . || true
-          echo "${{ env.FILE_NAME }}" > latest_version.txt
+          echo "${{ env.FILE_VERSION }}" > latest_version.txt
           git add latest_version.txt
-          git commit -m "Nix Memory Update: ${{ env.FILE_NAME }}"
+          git commit -m "Nix Sync: ${{ env.FILE_VERSION }}"
           git push origin bot-memory --force
-          
