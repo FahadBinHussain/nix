@@ -1,12 +1,12 @@
-name: Immortal Silent Auto-Updater to uDrop
+name: Nix Auto-Updater to uDrop
 
 on:
   schedule:
-    - cron: '0 0 * * *' # Runs daily at Midnight UTC
-  workflow_dispatch: # Allows you to manually trigger it via the Actions tab
+    - cron: '0 0 * * *'
+  workflow_dispatch:
 
 permissions:
-  contents: write # Required so the bot can push the hidden memory branch
+  contents: write
 
 jobs:
   check-and-upload:
@@ -19,43 +19,40 @@ jobs:
       - name: Restore Memory from Hidden Branch
         shell: bash
         run: |
-          echo "Fetching bot-memory branch..."
-          # Try to fetch the hidden branch. If it doesn't exist yet, don't throw an error.
           git fetch origin bot-memory || true
-          
-          # Try to pull the text file from the hidden branch. If it fails, create an empty one.
           git checkout origin/bot-memory -- latest_version.txt || echo "" > latest_version.txt
-          
-          echo "Last known version was:"
-          cat latest_version.txt
 
-      - name: Check Store API for New Version
+      - name: Check Store API (Bypass Cloudflare)
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
+          $productId = "${{ secrets.PRODUCT_ID }}"
           
-          # Read the memory file
-          $LatestKnown = ""
-          if (Test-Path "latest_version.txt") {
-              $LatestKnown = Get-Content "latest_version.txt" -Raw
-              $LatestKnown = $LatestKnown.Trim()
+          # 1. Define a modern browser User-Agent
+          $UserAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36"
+          
+          Write-Host "Fetching links for Product ID: $productId using Stealth headers..."
+          
+          # 2. Use curl.exe directly with custom headers to bypass simple bot detection
+          $Response = curl.exe -s -X POST "https://store.rg-adguard.net/api/GetFiles" `
+            -H "Content-Type: application/x-www-form-urlencoded" `
+            -H "User-Agent: $UserAgent" `
+            -H "Referer: https://store.rg-adguard.net/" `
+            -H "Origin: https://store.rg-adguard.net" `
+            --data-binary "type=ProductId&url=$productId&ring=Retail&lang=en-US"
+
+          # Check if we got the "Just a moment" block again
+          if ($Response -match "Just a moment" -or $Response -match "cloudflare") {
+              Write-Host "Error: Cloudflare is still blocking the request. It requires a JavaScript challenge solver."
+              exit 1
           }
 
-          $productId = "${{ secrets.PRODUCT_ID }}"
-          Write-Host "Fetching links for Product ID: $productId"
-          
-          # Query store.rg-adguard.net API
-          $Uri = "https://store.rg-adguard.net/api/GetFiles"
-          $Body = "type=ProductId&url=$productId&ring=Retail&lang=en-US"
-          $Headers = @{ "Content-Type" = "application/x-www-form-urlencoded" }
-          
-          $Response = Invoke-WebRequest -Uri $Uri -Method Post -Body $Body -Headers $Headers -UseBasicParsing
-          $Links = [regex]::Matches($Response.Content, '<a href="(.*?)".*?>(.*?)<\/a>')
+          # 3. Extract links from the raw HTML response
+          $Links = [regex]::Matches($Response, '<a href="(.*?)".*?>(.*?)<\/a>')
           
           $TargetUrl = ""
           $TargetName = ""
           
-          # 1. Search for a universal bundle first
           foreach ($Link in $Links) {
               $Url = $Link.Groups[1].Value
               $Filename = $Link.Groups[2].Value
@@ -66,12 +63,11 @@ jobs:
               }
           }
           
-          # 2. Fallback to single architecture
           if ($TargetUrl -eq "") {
              foreach ($Link in $Links) {
                  $Url = $Link.Groups[1].Value
                  $Filename = $Link.Groups[2].Value
-                 if (($Filename -match "\.msix$" -or $Filename -match "\.appx$") -and ($Filename -notmatch "\.BlockMap$") -and ($Filename -notmatch "\.eappx$")) {
+                 if (($Filename -match "\.msix$" -or $Filename -match "\.appx$") -and ($Filename -notmatch "\.BlockMap$")) {
                      if ($Filename -match "_x64_" -or $Filename -match "_neutral_") {
                          $TargetUrl = $Url
                          $TargetName = $Filename
@@ -82,81 +78,51 @@ jobs:
           }
           
           if ($TargetUrl -eq "") {
-              Write-Host "Error: Could not find a valid .msix or .appx file."
+              Write-Host "Error: Could not find valid package links in the API response."
               exit 1
           }
 
-          # 3. Compare with memory
+          # Check against memory
+          $LatestKnown = (Get-Content "latest_version.txt" -Raw).Trim()
           if ($TargetName -eq $LatestKnown) {
-              Write-Host "The app is already up-to-date ($TargetName). Skipping upload."
+              Write-Host "App is up-to-date ($TargetName). Skipping."
               Add-Content -Path $env:GITHUB_ENV -Value "SKIP_UPLOAD=true"
           } else {
-              Write-Host "New version detected: $TargetName"
+              Write-Host "New version: $TargetName"
               Add-Content -Path $env:GITHUB_ENV -Value "SKIP_UPLOAD=false"
               Add-Content -Path $env:GITHUB_ENV -Value "TARGET_URL=$TargetUrl"
           }
-          
           Add-Content -Path $env:GITHUB_ENV -Value "FILE_NAME=$TargetName"
 
       - name: Download New Package
         if: env.SKIP_UPLOAD == 'false'
         shell: pwsh
         run: |
-          Write-Host "Downloading $($env:FILE_NAME) to GitHub Runner..."
-          Invoke-WebRequest -Uri $env:TARGET_URL -OutFile $env:FILE_NAME
+          # Use curl -L to follow redirects from Microsoft's CDN
+          curl.exe -L -o "$($env:FILE_NAME)" "$($env:TARGET_URL)"
 
       - name: Upload Package to uDrop
         if: env.SKIP_UPLOAD == 'false'
         shell: pwsh
         run: |
-          $ErrorActionPreference = "Stop"
-          $FileName = $env:FILE_NAME
-          
-          Write-Host "Authenticating with uDrop API..."
-          $AuthUri = "https://www.udrop.com/api/v2/authorize"
-          $AuthBody = @{
-              key1 = "${{ secrets.UDROP_KEY1 }}"
-              key2 = "${{ secrets.UDROP_KEY2 }}"
-          }
-          $AuthResponse = Invoke-RestMethod -Uri $AuthUri -Method Post -Body $AuthBody
-          
+          $AuthBody = @{ key1 = "${{ secrets.UDROP_KEY1 }}"; key2 = "${{ secrets.UDROP_KEY2 }}" }
+          $AuthResponse = Invoke-RestMethod -Uri "https://www.udrop.com/api/v2/authorize" -Method Post -Body $AuthBody
           $AccessToken = if ($AuthResponse.access_token) { $AuthResponse.access_token } else { $AuthResponse.response.access_token }
           $AccountId = if ($AuthResponse.account_id) { $AuthResponse.account_id } else { $AuthResponse.response.account_id }
 
-          Write-Host "Uploading $FileName to uDrop..."
-          $UploadUri = "https://www.udrop.com/api/v2/file/upload"
-          
-          $Form = @{
-              access_token = $AccessToken
-              account_id   = $AccountId
-              upload_file  = Get-Item -Path $FileName
-          }
-          
-          $UploadResponse = Invoke-RestMethod -Uri $UploadUri -Method Post -Form $Form
+          $Form = @{ access_token = $AccessToken; account_id = $AccountId; upload_file = Get-Item -Path $env:FILE_NAME }
+          Invoke-RestMethod -Uri "https://www.udrop.com/api/v2/file/upload" -Method Post -Form $Form
           Write-Host "Upload Complete!"
 
       - name: Save Memory to Hidden Branch
         if: env.SKIP_UPLOAD == 'false'
         shell: bash
         run: |
-          # Configure Git Bot
           git config --global user.name "github-actions[bot]"
-          git config --global user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          
-          # Checkout a completely isolated (orphan) branch named bot-memory
+          git config --global user.email "github-actions[bot]@users.noreply.github.com"
           git checkout --orphan bot-memory
-          
-          # Remove all your actual repository code from this branch's staging area
           git rm -rf .
-          
-          # Add ONLY the memory text file
           echo "${{ env.FILE_NAME }}" > latest_version.txt
           git add latest_version.txt
-          
-          # Commit and force push to hide it away from the main branch
           git commit -m "Memory update: ${{ env.FILE_NAME }}"
           git push origin bot-memory --force
-
-      # - name: Keep Workflow Alive
-      #   uses: gautamkrishnar/keepalive-workflow@v2
-      #   # This prevents GitHub from disabling the cron job after 60 days of human inactivity
