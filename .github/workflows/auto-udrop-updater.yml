@@ -139,6 +139,4 @@ jobs:
           git add latest_version.txt
           git commit -m "Nix Memory Update: ${{ env.FILE_NAME }}"
           git push origin bot-memory --force
-
-      - name: Keep Workflow Alive
-        uses: gautamkrishnar/keepalive-workflow@v2
+          
