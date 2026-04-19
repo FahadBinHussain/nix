@@ -1,16 +1,16 @@
-name: Nix - Premium MS Store Archiver
+name: Nix - MS Store Mirror
 
 on:
   schedule:
-    - cron: '0 0 * * *'
-  workflow_dispatch:
+    - cron: '0 0 * * *' # Runs daily at Midnight UTC
+  workflow_dispatch: # Allows manual trigger
 
 permissions:
   contents: write
 
 jobs:
   nix-process:
-    runs-on: ubuntu-latest # Switched to Linux for faster Playwright performance
+    runs-on: ubuntu-latest
 
     steps:
       - name: Checkout Repository
@@ -22,7 +22,9 @@ jobs:
           node-version: 20
 
       - name: Install Playwright
-        run: npx playwright install chromium
+        run: |
+          npm install playwright
+          npx playwright install chromium --with-deps
 
       - name: Restore Memory from Hidden Branch
         shell: bash
@@ -39,25 +41,29 @@ jobs:
           node -e "
           const { chromium } = require('playwright');
           (async () => {
-            const browser = await chromium.launch();
+            const browser = await chromium.launch({ headless: true });
             const page = await browser.newPage();
-            console.log('Navigating to Store API...');
             
-            await page.goto('https://store.rg-adguard.net/');
+            // Mask as a real browser
+            await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36');
+            
+            console.log('Navigating to Store API...');
+            await page.goto('https://store.rg-adguard.net/', { waitUntil: 'networkidle' });
+            
             await page.fill('#url', process.env.PRODUCT_ID);
             await page.selectOption('#ring', 'Retail');
             await page.click('input[type=\"button\"]');
             
-            console.log('Waiting for Cloudflare and Results...');
+            console.log('Waiting for results (Handling Cloudflare)...');
             try {
-              // This waits up to 60 seconds for the table to appear (solving challenge)
+              // Wait up to 60s for the results table to appear (Cloudflare bypass window)
               await page.waitForSelector('table.table', { timeout: 60000 });
               
               const links = await page.\$\$eval('table.table a', anchors => 
                 anchors.map(a => ({ href: a.href, text: a.innerText }))
               );
               
-              // Logic to find Bundle or x64
+              // Find Bundle or x64
               let target = links.find(l => l.text.endsWith('.msixbundle') || l.text.endsWith('.appxbundle'));
               if (!target) {
                 target = links.find(l => (l.text.includes('_x64_') || l.text.includes('_neutral_')) && 
@@ -66,35 +72,37 @@ jobs:
               }
               
               if (target) {
-                console.log('FOUND_FILE=' + target.text);
-                console.log('FOUND_URL=' + target.href);
-                require('fs').appendFileSync(process.env.GITHUB_ENV, 'FILE_NAME=' + target.text + '\n');
-                require('fs').appendFileSync(process.env.GITHUB_ENV, 'TARGET_URL=' + target.href + '\n');
+                console.log('SUCCESS: Found ' + target.text);
+                const fs = require('fs');
+                fs.appendFileSync(process.env.GITHUB_ENV, 'FILE_NAME=' + target.text + '\n');
+                fs.appendFileSync(process.env.GITHUB_ENV, 'TARGET_URL=' + target.href + '\n');
               } else {
-                console.error('No valid links found in table.');
+                console.error('FAILED: No valid links found in the table.');
                 process.exit(1);
               }
             } catch (e) {
-              console.error('Timeout or block: ' + e.message);
+              console.error('CRITICAL ERROR: ' + e.message);
               process.exit(1);
             }
             await browser.close();
           })();
           "
 
-      - name: Version Check
+      - name: Version Comparison
         run: |
           STORE_VER="${{ env.FILE_NAME }}"
           MEM_VER="${{ env.CURRENT_MEM }}"
+          echo "Comparing Store ($STORE_VER) with Memory ($MEM_VER)"
+          
           if [ "$STORE_VER" == "$MEM_VER" ]; then
             echo "SKIP_UPLOAD=true" >> $GITHUB_ENV
-            echo "Version matches. Skipping."
+            echo "Status: Up to date."
           else
             echo "SKIP_UPLOAD=false" >> $GITHUB_ENV
-            echo "New version detected!"
+            echo "Status: New version found."
           fi
 
-      - name: Download and Mirror to uDrop
+      - name: Mirror to uDrop
         if: env.SKIP_UPLOAD == 'false'
         run: |
           echo "Downloading ${{ env.FILE_NAME }}..."
@@ -104,23 +112,33 @@ jobs:
           AUTH_RES=$(curl -s -X POST "https://www.udrop.com/api/v2/authorize" \
             -d "key1=${{ secrets.UDROP_KEY1 }}&key2=${{ secrets.UDROP_KEY2 }}")
           
-          # Extract tokens using python (cleaner than bash/sed)
-          TOKEN=$(echo $AUTH_RES | python3 -c "import sys, json; data=json.load(sys.stdin); print(data.get('access_token') or data['response']['access_token'])")
-          ACC_ID=$(echo $AUTH_RES | python3 -c "import sys, json; data=json.load(sys.stdin); print(data.get('account_id') or data['response']['account_id'])")
+          # Use Python to safely extract JSON tokens
+          TOKEN=$(echo $AUTH_RES | python3 -c "import sys, json; data=json.load(sys.stdin); print(data.get('access_token') or data.get('response', {}).get('access_token', ''))")
+          ACC_ID=$(echo $AUTH_RES | python3 -c "import sys, json; data=json.load(sys.stdin); print(data.get('account_id') or data.get('response', {}).get('account_id', ''))")
           
+          if [ -z "$TOKEN" ]; then echo "Auth Failed: $AUTH_RES"; exit 1; fi
+
           echo "Uploading to uDrop Account: $ACC_ID..."
-          curl -X POST "https://www.udrop.com/api/v2/file/upload" \
+          UPLOAD_RES=$(curl -X POST "https://www.udrop.com/api/v2/file/upload" \
             -F "access_token=$TOKEN" \
             -F "account_id=$ACC_ID" \
-            -F "upload_file=@${{ env.FILE_NAME }}"
+            -F "upload_file=@${{ env.FILE_NAME }}")
+          
+          echo "uDrop Response: $UPLOAD_RES"
 
-      - name: Update Memory Branch
+      - name: Update Hidden Memory Branch
         if: env.SKIP_UPLOAD == 'false'
         run: |
           git config --global user.name "github-actions[bot]"
           git config --global user.email "github-actions[bot]@users.noreply.github.com"
+          
+          # Switch to/Create the bot-memory branch
           git checkout --orphan bot-memory || git checkout bot-memory
+          
+          # Wipe code from this branch to keep it 100% clean
           git rm -rf . || true
+          
+          # Save only the filename
           echo "${{ env.FILE_NAME }}" > latest_version.txt
           git add latest_version.txt
           git commit -m "Nix Update: ${{ env.FILE_NAME }}"
