@@ -1,4 +1,4 @@
-name: Nix Debug-Updater
+name: Nix Final Stable
 
 on:
   schedule:
@@ -28,16 +28,29 @@ jobs:
         run: |
           $ErrorActionPreference = "Stop"
           $productId = "${{ secrets.PRODUCT_ID }}"
-          $UserAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36"
+          $UserAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
           
-          $Response = curl.exe -s -X POST "https://store.rg-adguard.net/api/GetFiles" `
+          Write-Host "Fetching Product ID: $productId"
+          
+          # Use curl with standard browser headers
+          $Response = curl.exe -s -k -X POST "https://store.rg-adguard.net/api/GetFiles" `
             -H "Content-Type: application/x-www-form-urlencoded" `
             -H "User-Agent: $UserAgent" `
+            -H "Referer: https://store.rg-adguard.net/" `
             --data-binary "type=ProductId&url=$productId&ring=Retail&lang=en-US"
+
+          # VALIDATION: Check if we got links at all
+          if ($Response -notmatch "<table" -or $Response -match "Just a moment") {
+              Write-Host "ERROR: Cloudflare blocked the request or the API returned no results."
+              Write-Host "Showing raw response snippet for debugging:"
+              Write-Host ($Response.Substring(0, [math]::Min(500, $Response.Length)))
+              exit 1
+          }
 
           $Links = [regex]::Matches($Response, '<a href="(.*?)".*?>(.*?)<\/a>')
           $TargetUrl = ""; $TargetName = ""
           
+          # Strategy: Find the biggest bundle or x64 msix
           foreach ($Link in $Links) {
               $Url = $Link.Groups[1].Value
               $Filename = $Link.Groups[2].Value
@@ -45,11 +58,9 @@ jobs:
                   $TargetUrl = $Url; $TargetName = $Filename; break
               }
           }
-          
           if ($TargetUrl -eq "") {
              foreach ($Link in $Links) {
-                 $Url = $Link.Groups[1].Value
-                 $Filename = $Link.Groups[2].Value
+                 $Url = $Link.Groups[1].Value; $Filename = $Link.Groups[2].Value
                  if (($Filename -match "\.msix$" -or $Filename -match "\.appx$") -and ($Filename -notmatch "\.BlockMap$")) {
                      if ($Filename -match "_x64_" -or $Filename -match "_neutral_") {
                          $TargetUrl = $Url; $TargetName = $Filename; break
@@ -58,48 +69,57 @@ jobs:
              }
           }
 
-          $LatestKnown = "$env:CURRENT_MEM".Trim()
-          Write-Host "Store Version: $TargetName"
-          Write-Host "Memory Version: $LatestKnown"
-
-          if ($TargetName -eq $LatestKnown) {
-              Write-Host ">>> MATCH FOUND: Skipping upload to save uDrop space."
-              Add-Content -Path $env:GITHUB_ENV -Value "SKIP_UPLOAD=true"
-          } else {
-              Write-Host ">>> NEW VERSION: Proceeding to upload."
-              Add-Content -Path $env:GITHUB_ENV -Value "SKIP_UPLOAD=false"
-              Add-Content -Path $env:GITHUB_ENV -Value "TARGET_URL=$TargetUrl"
+          # Safety check before proceeding
+          if ([string]::IsNullOrEmpty($TargetName) -or [string]::IsNullOrEmpty($TargetUrl)) {
+              Write-Host "Error: Logic matched 0 files. Check if ProductID is correct."
+              exit 1
           }
-          Add-Content -Path $env:GITHUB_ENV -Value "FILE_NAME=$TargetName"
+
+          $LatestKnown = "$env:CURRENT_MEM".Trim()
+          Write-Host "Newest Store Version: $TargetName"
+          
+          if ($TargetName -eq $LatestKnown) {
+              Write-Host "App is already cached. Skipping upload."
+              "SKIP_UPLOAD=true" | Out-File -FilePath $env:GITHUB_ENV -Append
+          } else {
+              Write-Host "New Version Found! Ready to download."
+              "SKIP_UPLOAD=false" | Out-File -FilePath $env:GITHUB_ENV -Append
+              "TARGET_URL=$TargetUrl" | Out-File -FilePath $env:GITHUB_ENV -Append
+              "FILE_NAME=$TargetName" | Out-File -FilePath $env:GITHUB_ENV -Append
+          }
 
       - name: Download New Package
         if: env.SKIP_UPLOAD == 'false'
         shell: pwsh
         run: |
-          Write-Host "Downloading $($env:FILE_NAME)..."
-          curl.exe -L -o "$($env:FILE_NAME)" "$($env:TARGET_URL)"
-          $size = (Get-Item "$($env:FILE_NAME)").Length / 1MB
-          Write-Host "Download Complete. Size: $size MB"
+          Write-Host "Downloading: $env:FILE_NAME"
+          # -L follows redirects, -k ignores SSL issues, -o saves the file
+          curl.exe -L -k -o "$env:FILE_NAME" "$env:TARGET_URL"
+          
+          if (!(Test-Path "$env:FILE_NAME") -or (Get-Item "$env:FILE_NAME").Length -lt 1000) {
+              Write-Host "Error: Download failed or file is empty."
+              exit 1
+          }
+          $size = [math]::Round((Get-Item "$env:FILE_NAME").Length / 1MB, 2)
+          Write-Host "Success. File Size: $size MB"
 
       - name: Upload Package to uDrop
         if: env.SKIP_UPLOAD == 'false'
         shell: pwsh
         run: |
-          Write-Host "Starting uDrop Upload Process..."
+          Write-Host "Authenticating with uDrop..."
           $AuthBody = @{ key1 = "${{ secrets.UDROP_KEY1 }}"; key2 = "${{ secrets.UDROP_KEY2 }}" }
           $AuthResponse = Invoke-RestMethod -Uri "https://www.udrop.com/api/v2/authorize" -Method Post -Body $AuthBody
           
           $AccessToken = if ($AuthResponse.access_token) { $AuthResponse.access_token } else { $AuthResponse.response.access_token }
           $AccountId = if ($AuthResponse.account_id) { $AuthResponse.account_id } else { $AuthResponse.response.account_id }
 
+          Write-Host "Uploading to uDrop (Account: $AccountId)..."
           $Form = @{ access_token = $AccessToken; account_id = $AccountId; upload_file = Get-Item -Path $env:FILE_NAME }
-          $UploadResponse = Invoke-RestMethod -Uri "https://www.udrop.com/api/v2/file/upload" -Method Post -Form $Form
-          
-          Write-Host "uDrop API Response:"
-          $UploadResponse | ConvertTo-Json | Write-Host
+          $UploadResponse = Invoke-RestMethod -Uri "https://www.udrop.com/api/v2/file/upload" -Method Post -Form $Form -TimeoutSec 600
           
           if ($UploadResponse.status -eq "success" -or $UploadResponse._status -eq "success") {
-             Write-Host "Upload confirmed by uDrop!"
+             Write-Host "Done! File uploaded to uDrop."
           } else {
              Write-Host "uDrop Error: $($UploadResponse.response)"
              exit 1
@@ -115,5 +135,5 @@ jobs:
           git rm -rf . || true
           echo "${{ env.FILE_NAME }}" > latest_version.txt
           git add latest_version.txt
-          git commit -m "Memory update: ${{ env.FILE_NAME }}"
+          git commit -m "Mirror update: ${{ env.FILE_NAME }}"
           git push origin bot-memory --force
