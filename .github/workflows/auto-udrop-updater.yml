@@ -30,14 +30,32 @@ jobs:
           
           # 1. Ask WinGet for the latest version info
           Write-Host "Querying Microsoft Store for ID: $productId..."
-          $info = winget show --id $productId --source msstore | Out-String
+          $info = winget show --id $productId --exact --source msstore --accept-source-agreements --disable-interactivity 2>&1 | Out-String
+          if ($LASTEXITCODE -ne 0) {
+              Write-Host "Error: 'winget show' failed."
+              Write-Host $info
+              exit 1
+          }
           
-          # Extract the version number
-          if ($info -match "Version:\s+([^\s\r\n]+)") {
-              $version = $Matches[1]
+          # Extract the version number (robust to output formatting differences)
+          $version = $null
+          $versionPatterns = @(
+              '(?im)^\s*Version\s*:\s*([^\r\n]+)\s*$',
+              '(?im)^\s*Installer\s+Version\s*:\s*([^\r\n]+)\s*$'
+          )
+          foreach ($pattern in $versionPatterns) {
+              if ($info -match $pattern) {
+                  $version = $Matches[1].Trim()
+                  break
+              }
+          }
+
+          if ($version) {
               Write-Host "Latest Version found: $version"
           } else {
               Write-Host "Error: Could not find version info."
+              Write-Host "Raw output:"
+              Write-Host $info
               exit 1
           }
 
@@ -51,10 +69,18 @@ jobs:
               
               # 3. Download the file directly from Microsoft
               # This saves the .msix/.appx to the current directory
-              winget download --id $productId --source msstore --download-directory .
+              winget download --id $productId --exact --source msstore --accept-source-agreements --disable-interactivity --download-directory .
+              if ($LASTEXITCODE -ne 0) {
+                  Write-Host "Error: 'winget download' failed."
+                  exit 1
+              }
               
               # Find the file name (WinGet names it based on the ID/Version)
               $file = Get-ChildItem -Include *.msix, *.msixbundle, *.appxbundle -Recurse | Select-Object -First 1
+              if (-not $file) {
+                  Write-Host "Error: Download completed but no app package file was found."
+                  exit 1
+              }
               
               Add-Content -Path $env:GITHUB_ENV -Value "SKIP_UPLOAD=false"
               Add-Content -Path $env:GITHUB_ENV -Value "FILE_NAME=$($file.Name)"
