@@ -23,79 +23,92 @@ jobs:
           git checkout origin/bot-memory -- latest_version.txt || echo "none" > latest_version.txt
           echo "CURRENT_MEM=$(cat latest_version.txt)" >> $GITHUB_ENV
 
-      - name: Fetch App via WinGet
+      - name: Fetch App via DanStore API
         shell: powershell
         run: |
           $productId = "${{ secrets.PRODUCT_ID }}"
-          
-          # 1. Ask WinGet for the latest version info
-          Write-Host "Querying Microsoft Store for ID: $productId..."
-          $info = winget show --id $productId --exact --source msstore --accept-source-agreements --disable-interactivity 2>&1 | Out-String
-          if ($LASTEXITCODE -ne 0) {
-              Write-Host "Error: 'winget show' failed."
-              Write-Host $info
+
+          if (-not $productId) {
+              Write-Host "Error: PRODUCT_ID secret is empty."
               exit 1
           }
-          
-          # Extract the version number (robust to output formatting differences)
-          $version = $null
-          $versionPatterns = @(
-              '(?im)^\s*Version\s*:\s*([^\r\n]+)\s*$',
-              '(?im)^\s*Installer\s+Version\s*:\s*([^\r\n]+)\s*$'
+
+          Write-Host "Querying DanStore API for ID: $productId..."
+          $apiUrl = "https://danstore-ms.vercel.app/api/packages?id=$productId&type=ProductId&environment=Production"
+          $headers = @{
+              "User-Agent" = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
+              "Accept" = "application/json, text/plain, */*"
+              "Referer" = "https://danstore-ms.vercel.app/"
+              "Origin" = "https://danstore-ms.vercel.app"
+          }
+
+          try {
+              $resp = Invoke-RestMethod -Uri $apiUrl -Method Get -Headers $headers -TimeoutSec 60
+          } catch {
+              Write-Host "Error: DanStore API request failed: $($_.Exception.Message)"
+              exit 1
+          }
+
+          if (-not $resp -or -not $resp.packages -or $resp.packages.Count -eq 0) {
+              Write-Host "Error: No packages returned by DanStore API."
+              exit 1
+          }
+
+          # Prefer bundle packages first, then x64/neutral app packages.
+          $priority = @{
+              "MSIXBUNDLE" = 1
+              "APPXBUNDLE" = 1
+              "EMSIXBUNDLE" = 1
+              "MSIX" = 2
+              "APPX" = 2
+          }
+          $candidates = @(
+              $resp.packages |
+              Where-Object {
+                  $priority.ContainsKey($_.type) -and
+                  ($_.architecture -in @("neutral", "x64", "", $null))
+              } |
+              Sort-Object `
+                  @{ Expression = { if ($priority.ContainsKey($_.type)) { $priority[$_.type] } else { 9 } } }, `
+                  @{ Expression = { try { [version]$_.version } catch { [version]"0.0.0.0" } }; Descending = $true }
           )
-          foreach ($pattern in $versionPatterns) {
-              if ($info -match $pattern) {
-                  $version = $Matches[1].Trim()
-                  break
-              }
-          }
 
-          if ($version) {
-              Write-Host "Latest Version found: $version"
-          } else {
-              Write-Host "Error: Could not find version info."
-              Write-Host "Raw output:"
-              Write-Host $info
+          if ($candidates.Count -eq 0) {
+              Write-Host "Error: No suitable downloadable package candidate found."
               exit 1
           }
 
-          # 2. Compare with memory
-          $latestKnown = "${{ env.CURRENT_MEM }}".Trim()
-          $versionIsUsable = ($version -and $version -ne "Unknown")
+          $target = $candidates[0]
+          $extMap = @{
+              "MSIXBUNDLE" = "msixbundle"
+              "APPXBUNDLE" = "appxbundle"
+              "EMSIXBUNDLE" = "emsixbundle"
+              "MSIX" = "msix"
+              "APPX" = "appx"
+          }
+          $ext = if ($extMap.ContainsKey($target.type)) { $extMap[$target.type] } else { "bin" }
+          $fileName = "$($target.fileName).$ext"
+          $marker = if ($target.version -and $target.version -ne "Unknown") { $target.version } else { $fileName }
 
-          if ($versionIsUsable -and $version -eq $latestKnown) {
+          $latestKnown = "${{ env.CURRENT_MEM }}".Trim()
+          if ($marker -eq $latestKnown) {
               Write-Host "App is up to date. Skipping."
               Add-Content -Path $env:GITHUB_ENV -Value "SKIP_UPLOAD=true"
-          } else {
-              if (-not $versionIsUsable) {
-                  Write-Host "Version is unknown from Store metadata; proceeding with download and using filename as memory marker."
-              } else {
-                  Write-Host "New version detected ($version). Starting download..."
-              }
-              
-              # 3. Download the file directly from Microsoft
-              # This saves the .msix/.appx to the current directory
-              winget download --id $productId --exact --source msstore --accept-source-agreements --accept-package-agreements --disable-interactivity --download-directory .
-              if ($LASTEXITCODE -ne 0) {
-                  Write-Host "Error: 'winget download' failed."
-                  exit 1
-              }
-              
-              # Find the file name (WinGet names it based on the ID/Version)
-              $file = Get-ChildItem -Include *.msix, *.msixbundle, *.appxbundle -Recurse | Select-Object -First 1
-              if (-not $file) {
-                  Write-Host "Error: Download completed but no app package file was found."
-                  exit 1
-              }
-              
-              Add-Content -Path $env:GITHUB_ENV -Value "SKIP_UPLOAD=false"
-              Add-Content -Path $env:GITHUB_ENV -Value "FILE_NAME=$($file.Name)"
-              if ($versionIsUsable) {
-                  Add-Content -Path $env:GITHUB_ENV -Value "FILE_VERSION=$version"
-              } else {
-                  Add-Content -Path $env:GITHUB_ENV -Value "FILE_VERSION=$($file.Name)"
-              }
+              exit 0
           }
+
+          Write-Host "New package found: $fileName (version: $($target.version))"
+          Write-Host "Downloading package..."
+          Invoke-WebRequest -Uri $target.url -OutFile $fileName -UseBasicParsing -TimeoutSec 180
+
+          if (-not (Test-Path $fileName)) {
+              Write-Host "Error: Download failed; file not found after download."
+              exit 1
+          }
+
+          Add-Content -Path $env:GITHUB_ENV -Value "SKIP_UPLOAD=false"
+          Add-Content -Path $env:GITHUB_ENV -Value "FILE_NAME=$fileName"
+          Add-Content -Path $env:GITHUB_ENV -Value "FILE_VERSION=$marker"
 
       - name: Upload to uDrop
         if: env.SKIP_UPLOAD == 'false'
