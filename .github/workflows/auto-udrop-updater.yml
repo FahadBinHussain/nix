@@ -1,4 +1,4 @@
-name: Nix Final Stable
+name: Nix - Premium MS Store Archiver
 
 on:
   schedule:
@@ -9,12 +9,20 @@ permissions:
   contents: write
 
 jobs:
-  check-and-upload:
-    runs-on: windows-latest
+  nix-process:
+    runs-on: ubuntu-latest # Switched to Linux for faster Playwright performance
 
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Install Playwright
+        run: npx playwright install chromium
 
       - name: Restore Memory from Hidden Branch
         shell: bash
@@ -23,111 +31,91 @@ jobs:
           git checkout origin/bot-memory -- latest_version.txt || echo "none" > latest_version.txt
           echo "CURRENT_MEM=$(cat latest_version.txt)" >> $GITHUB_ENV
 
-      - name: Check Store API
-        shell: pwsh
+      - name: Scrape Store Link (Bypass Cloudflare)
+        id: scraper
+        env:
+          PRODUCT_ID: ${{ secrets.PRODUCT_ID }}
         run: |
-          $ErrorActionPreference = "Stop"
-          $productId = "${{ secrets.PRODUCT_ID }}"
-          $UserAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
-          
-          Write-Host "Fetching Product ID: $productId"
-          
-          # Use curl with standard browser headers
-          $Response = curl.exe -s -k -X POST "https://store.rg-adguard.net/api/GetFiles" `
-            -H "Content-Type: application/x-www-form-urlencoded" `
-            -H "User-Agent: $UserAgent" `
-            -H "Referer: https://store.rg-adguard.net/" `
-            --data-binary "type=ProductId&url=$productId&ring=Retail&lang=en-US"
-
-          # VALIDATION: Check if we got links at all
-          if ($Response -notmatch "<table" -or $Response -match "Just a moment") {
-              Write-Host "ERROR: Cloudflare blocked the request or the API returned no results."
-              Write-Host "Showing raw response snippet for debugging:"
-              Write-Host ($Response.Substring(0, [math]::Min(500, $Response.Length)))
-              exit 1
-          }
-
-          $Links = [regex]::Matches($Response, '<a href="(.*?)".*?>(.*?)<\/a>')
-          $TargetUrl = ""; $TargetName = ""
-          
-          # Strategy: Find the biggest bundle or x64 msix
-          foreach ($Link in $Links) {
-              $Url = $Link.Groups[1].Value
-              $Filename = $Link.Groups[2].Value
-              if ($Filename -match "\.msixbundle$" -or $Filename -match "\.appxbundle$") {
-                  $TargetUrl = $Url; $TargetName = $Filename; break
+          node -e "
+          const { chromium } = require('playwright');
+          (async () => {
+            const browser = await chromium.launch();
+            const page = await browser.newPage();
+            console.log('Navigating to Store API...');
+            
+            await page.goto('https://store.rg-adguard.net/');
+            await page.fill('#url', process.env.PRODUCT_ID);
+            await page.selectOption('#ring', 'Retail');
+            await page.click('input[type=\"button\"]');
+            
+            console.log('Waiting for Cloudflare and Results...');
+            try {
+              // This waits up to 60 seconds for the table to appear (solving challenge)
+              await page.waitForSelector('table.table', { timeout: 60000 });
+              
+              const links = await page.\$\$eval('table.table a', anchors => 
+                anchors.map(a => ({ href: a.href, text: a.innerText }))
+              );
+              
+              // Logic to find Bundle or x64
+              let target = links.find(l => l.text.endsWith('.msixbundle') || l.text.endsWith('.appxbundle'));
+              if (!target) {
+                target = links.find(l => (l.text.includes('_x64_') || l.text.includes('_neutral_')) && 
+                                          (l.text.endsWith('.msix') || l.text.endsWith('.appx')) &&
+                                          !l.text.endsWith('.BlockMap'));
               }
-          }
-          if ($TargetUrl -eq "") {
-             foreach ($Link in $Links) {
-                 $Url = $Link.Groups[1].Value; $Filename = $Link.Groups[2].Value
-                 if (($Filename -match "\.msix$" -or $Filename -match "\.appx$") -and ($Filename -notmatch "\.BlockMap$")) {
-                     if ($Filename -match "_x64_" -or $Filename -match "_neutral_") {
-                         $TargetUrl = $Url; $TargetName = $Filename; break
-                     }
-                 }
-             }
-          }
+              
+              if (target) {
+                console.log('FOUND_FILE=' + target.text);
+                console.log('FOUND_URL=' + target.href);
+                require('fs').appendFileSync(process.env.GITHUB_ENV, 'FILE_NAME=' + target.text + '\n');
+                require('fs').appendFileSync(process.env.GITHUB_ENV, 'TARGET_URL=' + target.href + '\n');
+              } else {
+                console.error('No valid links found in table.');
+                process.exit(1);
+              }
+            } catch (e) {
+              console.error('Timeout or block: ' + e.message);
+              process.exit(1);
+            }
+            await browser.close();
+          })();
+          "
 
-          # Safety check before proceeding
-          if ([string]::IsNullOrEmpty($TargetName) -or [string]::IsNullOrEmpty($TargetUrl)) {
-              Write-Host "Error: Logic matched 0 files. Check if ProductID is correct."
-              exit 1
-          }
-
-          $LatestKnown = "$env:CURRENT_MEM".Trim()
-          Write-Host "Newest Store Version: $TargetName"
-          
-          if ($TargetName -eq $LatestKnown) {
-              Write-Host "App is already cached. Skipping upload."
-              "SKIP_UPLOAD=true" | Out-File -FilePath $env:GITHUB_ENV -Append
-          } else {
-              Write-Host "New Version Found! Ready to download."
-              "SKIP_UPLOAD=false" | Out-File -FilePath $env:GITHUB_ENV -Append
-              "TARGET_URL=$TargetUrl" | Out-File -FilePath $env:GITHUB_ENV -Append
-              "FILE_NAME=$TargetName" | Out-File -FilePath $env:GITHUB_ENV -Append
-          }
-
-      - name: Download New Package
-        if: env.SKIP_UPLOAD == 'false'
-        shell: pwsh
+      - name: Version Check
         run: |
-          Write-Host "Downloading: $env:FILE_NAME"
-          # -L follows redirects, -k ignores SSL issues, -o saves the file
-          curl.exe -L -k -o "$env:FILE_NAME" "$env:TARGET_URL"
-          
-          if (!(Test-Path "$env:FILE_NAME") -or (Get-Item "$env:FILE_NAME").Length -lt 1000) {
-              Write-Host "Error: Download failed or file is empty."
-              exit 1
-          }
-          $size = [math]::Round((Get-Item "$env:FILE_NAME").Length / 1MB, 2)
-          Write-Host "Success. File Size: $size MB"
+          STORE_VER="${{ env.FILE_NAME }}"
+          MEM_VER="${{ env.CURRENT_MEM }}"
+          if [ "$STORE_VER" == "$MEM_VER" ]; then
+            echo "SKIP_UPLOAD=true" >> $GITHUB_ENV
+            echo "Version matches. Skipping."
+          else
+            echo "SKIP_UPLOAD=false" >> $GITHUB_ENV
+            echo "New version detected!"
+          fi
 
-      - name: Upload Package to uDrop
+      - name: Download and Mirror to uDrop
         if: env.SKIP_UPLOAD == 'false'
-        shell: pwsh
         run: |
-          Write-Host "Authenticating with uDrop..."
-          $AuthBody = @{ key1 = "${{ secrets.UDROP_KEY1 }}"; key2 = "${{ secrets.UDROP_KEY2 }}" }
-          $AuthResponse = Invoke-RestMethod -Uri "https://www.udrop.com/api/v2/authorize" -Method Post -Body $AuthBody
+          echo "Downloading ${{ env.FILE_NAME }}..."
+          curl -L -o "${{ env.FILE_NAME }}" "${{ env.TARGET_URL }}"
           
-          $AccessToken = if ($AuthResponse.access_token) { $AuthResponse.access_token } else { $AuthResponse.response.access_token }
-          $AccountId = if ($AuthResponse.account_id) { $AuthResponse.account_id } else { $AuthResponse.response.account_id }
-
-          Write-Host "Uploading to uDrop (Account: $AccountId)..."
-          $Form = @{ access_token = $AccessToken; account_id = $AccountId; upload_file = Get-Item -Path $env:FILE_NAME }
-          $UploadResponse = Invoke-RestMethod -Uri "https://www.udrop.com/api/v2/file/upload" -Method Post -Form $Form -TimeoutSec 600
+          echo "Authenticating with uDrop..."
+          AUTH_RES=$(curl -s -X POST "https://www.udrop.com/api/v2/authorize" \
+            -d "key1=${{ secrets.UDROP_KEY1 }}&key2=${{ secrets.UDROP_KEY2 }}")
           
-          if ($UploadResponse.status -eq "success" -or $UploadResponse._status -eq "success") {
-             Write-Host "Done! File uploaded to uDrop."
-          } else {
-             Write-Host "uDrop Error: $($UploadResponse.response)"
-             exit 1
-          }
+          # Extract tokens using python (cleaner than bash/sed)
+          TOKEN=$(echo $AUTH_RES | python3 -c "import sys, json; data=json.load(sys.stdin); print(data.get('access_token') or data['response']['access_token'])")
+          ACC_ID=$(echo $AUTH_RES | python3 -c "import sys, json; data=json.load(sys.stdin); print(data.get('account_id') or data['response']['account_id'])")
+          
+          echo "Uploading to uDrop Account: $ACC_ID..."
+          curl -X POST "https://www.udrop.com/api/v2/file/upload" \
+            -F "access_token=$TOKEN" \
+            -F "account_id=$ACC_ID" \
+            -F "upload_file=@${{ env.FILE_NAME }}"
 
-      - name: Save Memory to Hidden Branch
+      - name: Update Memory Branch
         if: env.SKIP_UPLOAD == 'false'
-        shell: bash
         run: |
           git config --global user.name "github-actions[bot]"
           git config --global user.email "github-actions[bot]@users.noreply.github.com"
@@ -135,5 +123,5 @@ jobs:
           git rm -rf . || true
           echo "${{ env.FILE_NAME }}" > latest_version.txt
           git add latest_version.txt
-          git commit -m "Mirror update: ${{ env.FILE_NAME }}"
+          git commit -m "Nix Update: ${{ env.FILE_NAME }}"
           git push origin bot-memory --force
