@@ -1,12 +1,13 @@
 name: Nix - Official Mirror
 
 on:
+  push:
   schedule:
     - cron: '0 0 * * *'
   workflow_dispatch:
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
   nix-sync:
@@ -16,12 +17,14 @@ jobs:
       - name: Checkout Repository
         uses: actions/checkout@v4
 
-      - name: Restore Memory from Hidden Branch
+      - name: Load Memory from Secret
         shell: bash
         run: |
-          git fetch origin bot-memory || true
-          git checkout origin/bot-memory -- latest_version.txt || echo "none" > latest_version.txt
-          echo "CURRENT_MEM=$(cat latest_version.txt)" >> $GITHUB_ENV
+          if [ -z "${{ secrets.NIX_LAST_VERSION }}" ]; then
+            echo "CURRENT_MEM=none" >> $GITHUB_ENV
+          else
+            echo "CURRENT_MEM=${{ secrets.NIX_LAST_VERSION }}" >> $GITHUB_ENV
+          fi
 
       - name: Fetch App via DanStore API
         shell: powershell
@@ -205,15 +208,14 @@ jobs:
           Write-Host "Upload Complete!"
           Write-Host $uploadResult
 
-      - name: Update Memory Branch
+      - name: Update Memory Secret
         if: env.SKIP_UPLOAD == 'false'
         shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GH_PAT }}
         run: |
-          git config --global user.name "github-actions[bot]"
-          git config --global user.email "github-actions[bot]@users.noreply.github.com"
-          git checkout --orphan bot-memory || git checkout bot-memory
-          git rm -rf . || true
-          echo "${{ env.FILE_VERSION }}" > latest_version.txt
-          git add latest_version.txt
-          git commit -m "Nix Sync: ${{ env.FILE_VERSION }}"
-          git push origin bot-memory --force
+          if [ -z "$GH_TOKEN" ]; then
+            echo "Missing GH_PAT secret. Add a fine-grained token with Secrets write access to this repo."
+            exit 1
+          fi
+          echo "${{ env.FILE_VERSION }}" | gh secret set NIX_LAST_VERSION --repo "${{ github.repository }}" --body -
