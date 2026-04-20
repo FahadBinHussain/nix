@@ -115,14 +115,79 @@ jobs:
         shell: powershell
         run: |
           Write-Host "Mirroring $($env:FILE_NAME) to uDrop..."
-          $AuthBody = @{ key1 = "${{ secrets.UDROP_KEY1 }}"; key2 = "${{ secrets.UDROP_KEY2 }}" }
-          $AuthRes = Invoke-RestMethod -Uri "https://www.udrop.com/api/v2/authorize" -Method Post -Body $AuthBody
-          
-          $Token = if ($AuthRes.access_token) { $AuthRes.access_token } else { $AuthRes.response.access_token }
-          $AccId = if ($AuthRes.account_id) { $AuthRes.account_id } else { $AuthRes.response.account_id }
+          $k1 = "${{ secrets.UDROP_KEY1 }}"
+          $k2 = "${{ secrets.UDROP_KEY2 }}"
+          $AuthBody = @{ key1 = $k1; key2 = $k2 }
+          $AuthRes = $null
+          $Token = $null
+          $AccId = $null
+
+          try {
+            $AuthRes = Invoke-RestMethod -Uri "https://www.udrop.com/api/v2/authorize" -Method Post -Body $AuthBody
+          } catch {
+            Write-Host "Warning: Invoke-RestMethod auth failed: $($_.Exception.Message)"
+          }
+
+          if ($AuthRes) {
+            $Token = @(
+              $AuthRes.access_token,
+              $AuthRes.token,
+              $AuthRes.response.access_token,
+              $AuthRes.response.token,
+              $AuthRes.data.access_token,
+              $AuthRes.data.token
+            ) | Where-Object { $_ } | Select-Object -First 1
+
+            $AccId = @(
+              $AuthRes.account_id,
+              $AuthRes.acc_id,
+              $AuthRes.user_id,
+              $AuthRes.response.account_id,
+              $AuthRes.response.acc_id,
+              $AuthRes.response.user_id,
+              $AuthRes.data.account_id,
+              $AuthRes.data.acc_id,
+              $AuthRes.data.user_id
+            ) | Where-Object { $_ } | Select-Object -First 1
+          }
+
+          # Fallback auth via curl in case PowerShell parsing/shape differs.
+          if (-not $Token -or -not $AccId) {
+            Write-Host "Primary auth parse failed; trying curl auth fallback..."
+            $authRaw = curl.exe -sS -X POST "https://www.udrop.com/api/v2/authorize" -d "key1=$k1&key2=$k2"
+            if ($LASTEXITCODE -eq 0 -and $authRaw) {
+              try {
+                $authJson = $authRaw | ConvertFrom-Json
+                $Token = @(
+                  $authJson.access_token,
+                  $authJson.token,
+                  $authJson.response.access_token,
+                  $authJson.response.token,
+                  $authJson.data.access_token,
+                  $authJson.data.token
+                ) | Where-Object { $_ } | Select-Object -First 1
+                $AccId = @(
+                  $authJson.account_id,
+                  $authJson.acc_id,
+                  $authJson.user_id,
+                  $authJson.response.account_id,
+                  $authJson.response.acc_id,
+                  $authJson.response.user_id,
+                  $authJson.data.account_id,
+                  $authJson.data.acc_id,
+                  $authJson.data.user_id
+                ) | Where-Object { $_ } | Select-Object -First 1
+              } catch {
+                Write-Host "Warning: curl auth response was not JSON."
+              }
+            }
+          }
 
           if (-not $Token -or -not $AccId) {
             Write-Host "uDrop auth failed."
+            if ($AuthRes) {
+              Write-Host "Auth response keys: $((($AuthRes | Get-Member -MemberType NoteProperty | Select-Object -ExpandProperty Name) -join ', '))"
+            }
             exit 1
           }
 
