@@ -209,11 +209,42 @@ jobs:
             exit 1
           }
 
+          # Idempotency: check if same filename already exists in target folder before uploading.
+          $folderId = "${{ secrets.UDROP_FOLDER_ID }}"
+          $listBody = @{
+            access_token = $Token
+            account_id = $AccId
+          }
+          if ($folderId) { $listBody.parent_folder_id = $folderId }
+
+          $listRes = $null
+          try {
+            $listRes = Invoke-RestMethod -Uri "https://www.udrop.com/api/v2/folder/listing" -Method Post -Body $listBody
+          } catch {
+            Write-Host "Warning: folder/listing check failed via Invoke-RestMethod: $($_.Exception.Message)"
+          }
+
+          $existing = $null
+          if ($listRes -and $listRes.data -and $listRes.data.files) {
+            $existing = $listRes.data.files | Where-Object { $_.filename -eq $env:FILE_NAME } | Select-Object -First 1
+          }
+
+          if ($existing) {
+            Write-Host "File already exists on uDrop, skipping upload: $($env:FILE_NAME)"
+            exit 0
+          }
+
           # PowerShell 5.1 does not support Invoke-RestMethod -Form. Use curl.exe multipart upload.
-          $uploadResult = curl.exe -sS -X POST "https://www.udrop.com/api/v2/file/upload" `
-            -F "access_token=$Token" `
-            -F "account_id=$AccId" `
-            -F "upload_file=@$env:FILE_NAME"
+          $uploadArgs = @(
+            "-sS", "-X", "POST", "https://www.udrop.com/api/v2/file/upload",
+            "-F", "access_token=$Token",
+            "-F", "account_id=$AccId",
+            "-F", "upload_file=@$env:FILE_NAME"
+          )
+          if ($folderId) {
+            $uploadArgs += @("-F", "folder_id=$folderId")
+          }
+          $uploadResult = curl.exe @uploadArgs
 
           if ($LASTEXITCODE -ne 0) {
             Write-Host "Upload failed."
