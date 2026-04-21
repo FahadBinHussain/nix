@@ -95,10 +95,17 @@ jobs:
           }
           $ext = if ($extMap.ContainsKey($target.type)) { $extMap[$target.type] } else { "bin" }
           $fileName = "$($target.fileName).$ext"
-          $marker = if ($target.version -and $target.version -ne "Unknown") { $target.version } else { $fileName }
+          $versionMarker = if ($target.version -and $target.version -ne "Unknown") { $target.version } else { "" }
+          $fileMarker = $fileName
 
           $latestKnown = "${{ env.CURRENT_MEM }}".Trim()
-          if ($marker -eq $latestKnown) {
+          $knownParts = @()
+          if ($latestKnown) {
+            $knownParts = $latestKnown.Split("|") | Where-Object { $_ -and $_.Trim().Length -gt 0 } | ForEach-Object { $_.Trim() }
+          }
+          $alreadyProcessed = ($knownParts -contains $fileMarker) -or (($versionMarker -ne "") -and ($knownParts -contains $versionMarker))
+
+          if ($alreadyProcessed) {
               Write-Host "App is up to date. Skipping."
               Add-Content -Path $env:GITHUB_ENV -Value "SKIP_UPLOAD=true"
               exit 0
@@ -115,7 +122,11 @@ jobs:
 
           Add-Content -Path $env:GITHUB_ENV -Value "SKIP_UPLOAD=false"
           Add-Content -Path $env:GITHUB_ENV -Value "FILE_NAME=$fileName"
-          Add-Content -Path $env:GITHUB_ENV -Value "FILE_VERSION=$marker"
+          if ($versionMarker) {
+            Add-Content -Path $env:GITHUB_ENV -Value "FILE_VERSION=$versionMarker|$fileMarker"
+          } else {
+            Add-Content -Path $env:GITHUB_ENV -Value "FILE_VERSION=$fileMarker"
+          }
 
       - name: Upload to uDrop
         if: env.SKIP_UPLOAD == 'false'
