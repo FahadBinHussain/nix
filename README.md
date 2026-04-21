@@ -1,1 +1,149 @@
-# nix
+# Nix - Microsoft Store Mirror to uDrop
+
+Production-ready GitHub Actions pipeline that:
+- resolves the latest Microsoft Store package for a target `PRODUCT_ID` via DanStore API,
+- prevents duplicate uploads using both state markers and destination-side checks,
+- uploads new builds to uDrop,
+- stores sync state in private GitHub Secrets (not public branches).
+
+## What This Project Does
+
+This repository runs an automated sync workflow for one Microsoft Store app:
+
+1. Query latest package metadata from `danstore-ms.vercel.app`.
+2. Select the best package candidate (bundle preferred, x64/neutral fallback).
+3. Check if this build was already processed (secret-based memory marker).
+4. Check if the exact filename already exists in uDrop (idempotency guard).
+5. Download package only when required.
+6. Upload to uDrop.
+7. Update private memory marker (`NIX_LAST_VERSION`) to avoid reprocessing.
+
+## Workflow Triggers
+
+Workflow file: [auto-udrop-updater.yml](/C:/Users/Admin/Downloads/nix/.github/workflows/auto-udrop-updater.yml)
+
+Triggers:
+- `push`
+- `schedule`: `0 */6 * * *` (every 6 hours, UTC)
+- `workflow_dispatch` (manual)
+
+Concurrency:
+- One run per branch at a time (`cancel-in-progress: true`) to reduce race conditions.
+
+## Architecture
+
+### Data Sources
+- Package metadata: DanStore API
+  - `GET /api/packages?id=<PRODUCT_ID>&type=ProductId&environment=Production`
+- Destination: uDrop API v2
+  - `/authorize`
+  - `/folder/listing`
+  - `/file/upload`
+
+### State Management
+- Persistent marker is stored in GitHub Secret: `NIX_LAST_VERSION`
+- Marker format:
+  - `version|filename` (preferred)
+  - Backward-compatible with single-value legacy markers.
+
+### Idempotency Strategy
+- Layer 1: Compare candidate against `NIX_LAST_VERSION`.
+- Layer 2: Query uDrop folder listing and skip if same filename already exists.
+- Layer 3: Concurrency lock for overlapping runs.
+
+This combination is what makes repeated runs safe.
+
+## Required Secrets
+
+Configure these in:
+`Settings -> Secrets and variables -> Actions`
+
+Required:
+- `PRODUCT_ID`: Microsoft Store Product ID (example: `9WZDNCRFJ3TJ`)
+- `UDROP_KEY1`: uDrop API key 1
+- `UDROP_KEY2`: uDrop API key 2
+- `GH_PAT`: Fine-grained GitHub token used to update `NIX_LAST_VERSION`
+
+Optional (recommended):
+- `UDROP_FOLDER_ID`: Target uDrop folder ID. If omitted, root folder is used.
+- `NIX_LAST_VERSION`: Initial sync marker (set `none` for first run).
+
+## Required Token Permissions
+
+`GH_PAT` must allow updating repository Actions secrets for this repository.
+
+Recommended fine-grained PAT scope:
+- Repository access: this repo only
+- Permissions: secrets write (and read as needed by GitHub CLI)
+
+## Package Selection Logic
+
+Priority order:
+1. `MSIXBUNDLE` / `APPXBUNDLE` / `EMSIXBUNDLE`
+2. `MSIX` / `APPX`
+
+Architecture filter:
+- `neutral`
+- `x64`
+
+Version sorting:
+- Highest semantic version first (when parseable).
+
+## Operational Notes
+
+- GitHub scheduled runs are not guaranteed to start exactly on the minute.
+- This workflow intentionally supports frequent re-runs.
+- If the same build already exists in uDrop, it should skip upload and finish quickly.
+- State is private (secret-based), not committed to a branch.
+
+## How To Use
+
+1. Add required secrets.
+2. Push to `main` (or trigger manually).
+3. Check Actions logs for:
+   - package resolution
+   - dedupe decision
+   - upload status
+   - memory marker update
+
+## Troubleshooting
+
+### `PRODUCT_ID secret is empty`
+- Set `PRODUCT_ID` in repo secrets.
+
+### DanStore API returns empty/403
+- Usually transient or anti-bot behavior.
+- Retry workflow.
+- Ensure request headers in workflow were not removed.
+
+### uDrop auth failed
+- Verify `UDROP_KEY1` and `UDROP_KEY2`.
+- Check account/API status in uDrop dashboard.
+
+### Duplicate file still appears
+- Confirm workflow run used current YAML revision.
+- Ensure `UDROP_FOLDER_ID` matches the folder you inspect in uDrop UI.
+- Check logs for:
+  - `File already exists on uDrop...`
+  - `SHOULD_UPDATE_MEMORY=true`
+
+### Memory secret not updating
+- Verify `GH_PAT` exists and has permission to set repository secrets.
+- Check `Update Memory Secret` step logs.
+
+## Security Model
+
+- Secrets are never stored in repository files.
+- Sync memory is stored in private GitHub Actions secret.
+- Workflow uses `contents: read` permission by default.
+- API credentials are scoped to required services only.
+
+## Local Repository Contents
+
+- `.github/workflows/auto-udrop-updater.yml` - sync pipeline
+- `LICENSE` - MIT license
+- `README.md` - project documentation
+
+## License
+
+This project is licensed under the MIT License. See [LICENSE](/C:/Users/Admin/Downloads/nix/LICENSE).
