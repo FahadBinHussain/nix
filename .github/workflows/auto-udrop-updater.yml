@@ -108,10 +108,50 @@ jobs:
           if ($alreadyProcessed) {
               Write-Host "App is up to date. Skipping."
               Add-Content -Path $env:GITHUB_ENV -Value "SKIP_UPLOAD=true"
+              Add-Content -Path $env:GITHUB_ENV -Value "SHOULD_UPDATE_MEMORY=false"
               exit 0
           }
 
           Write-Host "New package found: $fileName (version: $($target.version))"
+          
+          # Check uDrop first to avoid duplicate download/upload when file already exists there.
+          $k1 = "${{ secrets.UDROP_KEY1 }}"
+          $k2 = "${{ secrets.UDROP_KEY2 }}"
+          $folderId = "${{ secrets.UDROP_FOLDER_ID }}"
+          $udropHasFile = $false
+
+          if ($k1 -and $k2) {
+            try {
+              $auth = Invoke-RestMethod -Uri "https://www.udrop.com/api/v2/authorize" -Method Post -Body @{ key1 = $k1; key2 = $k2 }
+              $tok = @($auth.access_token, $auth.token, $auth.data.access_token, $auth.response.access_token) | Where-Object { $_ } | Select-Object -First 1
+              $acc = @($auth.account_id, $auth.acc_id, $auth.user_id, $auth.data.account_id, $auth.response.account_id) | Where-Object { $_ } | Select-Object -First 1
+              if ($tok -and $acc) {
+                $listBody = @{ access_token = $tok; account_id = $acc }
+                if ($folderId) { $listBody.parent_folder_id = $folderId }
+                $list = Invoke-RestMethod -Uri "https://www.udrop.com/api/v2/folder/listing" -Method Post -Body $listBody
+                if ($list -and $list.data -and $list.data.files) {
+                  $hit = $list.data.files | Where-Object { $_.filename -eq $fileName } | Select-Object -First 1
+                  if ($hit) { $udropHasFile = $true }
+                }
+              }
+            } catch {
+              Write-Host "Warning: Pre-check on uDrop failed. Continuing with normal download/upload path."
+            }
+          }
+
+          if ($udropHasFile) {
+            Write-Host "File already exists on uDrop. Skipping download/upload and updating memory marker."
+            Add-Content -Path $env:GITHUB_ENV -Value "SKIP_UPLOAD=true"
+            Add-Content -Path $env:GITHUB_ENV -Value "FILE_NAME=$fileName"
+            if ($versionMarker) {
+              Add-Content -Path $env:GITHUB_ENV -Value "FILE_VERSION=$versionMarker|$fileMarker"
+            } else {
+              Add-Content -Path $env:GITHUB_ENV -Value "FILE_VERSION=$fileMarker"
+            }
+            Add-Content -Path $env:GITHUB_ENV -Value "SHOULD_UPDATE_MEMORY=true"
+            exit 0
+          }
+
           Write-Host "Downloading package..."
           Invoke-WebRequest -Uri $target.url -OutFile $fileName -UseBasicParsing -TimeoutSec 180
 
@@ -127,6 +167,7 @@ jobs:
           } else {
             Add-Content -Path $env:GITHUB_ENV -Value "FILE_VERSION=$fileMarker"
           }
+          Add-Content -Path $env:GITHUB_ENV -Value "SHOULD_UPDATE_MEMORY=true"
 
       - name: Upload to uDrop
         if: env.SKIP_UPLOAD == 'false'
@@ -255,7 +296,7 @@ jobs:
           Write-Host $uploadResult
 
       - name: Update Memory Secret
-        if: env.SKIP_UPLOAD == 'false'
+        if: env.SHOULD_UPDATE_MEMORY == 'true'
         shell: bash
         env:
           GH_TOKEN: ${{ secrets.GH_PAT }}
