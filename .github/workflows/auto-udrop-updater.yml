@@ -153,9 +153,19 @@ jobs:
           }
 
           Write-Host "Downloading package..."
-          Invoke-WebRequest -Uri $target.url -OutFile $fileName -UseBasicParsing -TimeoutSec 180
+          $downloadArgs = @(
+            "-L",
+            "--fail",
+            "--retry", "5",
+            "--retry-delay", "2",
+            "--retry-all-errors",
+            "--continue-at", "-",
+            "--output", $fileName,
+            $target.url
+          )
+          curl.exe @downloadArgs
 
-          if (-not (Test-Path $fileName)) {
+          if ($LASTEXITCODE -ne 0 -or -not (Test-Path $fileName)) {
               Write-Host "Error: Download failed; file not found after download."
               exit 1
           }
