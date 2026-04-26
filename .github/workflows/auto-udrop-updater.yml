@@ -2,8 +2,6 @@ name: Nix - Official Mirror
 
 on:
   push:
-  schedule:
-    - cron: '0 */6 * * *'
   workflow_dispatch:
 
 concurrency:
