@@ -345,15 +345,16 @@ jobs:
             exit 0
           }
 
+          $uploadUrl = "https://www.udrop.com/api/v2/file/upload?access_token=$([uri]::EscapeDataString($Token))&account_id=$([uri]::EscapeDataString($AccId))"
+          if ($folderId) {
+            $uploadUrl += "&folder_id=$([uri]::EscapeDataString($folderId))"
+          }
           $form = @{
-            access_token = $Token
-            account_id = $AccId
             upload_file = Get-Item -Path $env:FILE_NAME
           }
-          if ($folderId) { $form.folder_id = $folderId }
 
           try {
-            $uploadJson = Invoke-RestMethod -Uri "https://www.udrop.com/api/v2/file/upload" -Method Post -Form $form
+            $uploadJson = Invoke-RestMethod -Uri $uploadUrl -Method Post -Form $form
             $uploadResult = $uploadJson | ConvertTo-Json -Depth 10 -Compress
           } catch {
             Write-Host "Upload request failed: $($_.Exception.Message)"
