@@ -252,40 +252,44 @@ jobs:
           $accountId = "$env:UDROP_ACCOUNT_ID".Trim()
           $folderId = "${{ secrets.UDROP_FOLDER_ID }}"
 
-          Write-Host "Debug: Token length = $($token.Length), AccountId length = $($accountId.Length)"
-
           if (-not $token -or -not $accountId) {
             Write-Host "Upload failed: missing uDrop session from fetch step."
-            Write-Host "Token empty: $(-not $token), AccountId empty: $(-not $accountId)"
             exit 1
           }
 
           $filePath = (Resolve-Path -LiteralPath $env:FILE_NAME).Path
           
-          Write-Host "Debug: Preparing upload"
-          Write-Host "Debug: Token present: $($token.Length -gt 0), AccountId: $accountId"
-          Write-Host "Debug: File: $filePath"
+          # Use PowerShell's multipart form upload
+          Add-Type -AssemblyName System.Net.Http
+          $httpClient = New-Object System.Net.Http.HttpClient
+          $httpClient.Timeout = [TimeSpan]::FromMinutes(30)
           
-          # Build the URL with query parameters for access_token and account_id
-          $uploadUrl = "https://www.udrop.com/api/v2/file/upload"
-          $curlArgs = @(
-            "--show-error",
-            "--form", "access_token=$token",
-            "--form", "account_id=$accountId",
-            "--form", "upload_file=@$filePath"
-          )
+          $form = New-Object System.Net.Http.MultipartFormDataContent
+          $form.Add((New-Object System.Net.Http.StringContent($token)), "access_token")
+          $form.Add((New-Object System.Net.Http.StringContent($accountId)), "account_id")
           if ($folderId) {
-            $curlArgs += @("--form", "folder_id=$folderId")
+            $form.Add((New-Object System.Net.Http.StringContent($folderId)), "folder_id")
           }
-          $curlArgs += $uploadUrl
+          
+          $fileStream = [System.IO.File]::OpenRead($filePath)
+          $fileContent = New-Object System.Net.Http.StreamContent($fileStream)
+          $fileContent.Headers.ContentType = [System.Net.Http.Headers.MediaTypeHeaderValue]::Parse("application/octet-stream")
+          $form.Add($fileContent, "upload_file", [System.IO.Path]::GetFileName($filePath))
 
           try {
-            $uploadRaw = & curl.exe @curlArgs
-            if ($LASTEXITCODE -ne 0) {
-              Write-Host "Upload request failed via curl."
+            $response = $httpClient.PostAsync("https://www.udrop.com/api/v2/file/upload", $form).Result
+            $uploadRaw = $response.Content.ReadAsStringAsync().Result
+            $fileStream.Close()
+            $httpClient.Dispose()
+            
+            if (-not $response.IsSuccessStatusCode) {
+              Write-Host "Upload request failed with status: $($response.StatusCode)"
+              Write-Host $uploadRaw
               exit 1
             }
           } catch {
+            $fileStream.Close()
+            $httpClient.Dispose()
             Write-Host "Upload request failed: $($_.Exception.Message)"
             exit 1
           }
