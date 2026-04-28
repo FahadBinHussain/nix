@@ -252,8 +252,11 @@ jobs:
           $accountId = "$env:UDROP_ACCOUNT_ID".Trim()
           $folderId = "${{ secrets.UDROP_FOLDER_ID }}"
 
+          Write-Host "Debug: Token length = $($token.Length), AccountId length = $($accountId.Length)"
+
           if (-not $token -or -not $accountId) {
             Write-Host "Upload failed: missing uDrop session from fetch step."
+            Write-Host "Token empty: $(-not $token), AccountId empty: $(-not $accountId)"
             exit 1
           }
 
