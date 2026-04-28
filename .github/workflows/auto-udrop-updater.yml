@@ -261,8 +261,12 @@ jobs:
           }
 
           $filePath = (Resolve-Path -LiteralPath $env:FILE_NAME).Path
+          
+          Write-Host "Debug: Preparing upload with token=$($token.Substring(0, [Math]::Min(10, $token.Length)))..., accountId=$accountId"
+          Write-Host "Debug: File path = $filePath"
+          Write-Host "Debug: Folder ID = $folderId"
+          
           $curlArgs = @(
-            "--silent",
             "--show-error",
             "--form", "access_token=$token",
             "--form", "account_id=$accountId",
@@ -271,6 +275,8 @@ jobs:
           if ($folderId) {
             $curlArgs += @("--form", "folder_id=$folderId")
           }
+          
+          Write-Host "Debug: Curl args = $($curlArgs -join ' ')"
 
           try {
             $uploadRaw = & curl.exe "https://www.udrop.com/api/v2/file/upload" @curlArgs
