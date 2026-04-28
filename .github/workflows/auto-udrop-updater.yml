@@ -262,10 +262,12 @@ jobs:
 
           $filePath = (Resolve-Path -LiteralPath $env:FILE_NAME).Path
           
-          Write-Host "Debug: Preparing upload with token=$($token.Substring(0, [Math]::Min(10, $token.Length)))..., accountId=$accountId"
-          Write-Host "Debug: File path = $filePath"
-          Write-Host "Debug: Folder ID = $folderId"
+          Write-Host "Debug: Preparing upload"
+          Write-Host "Debug: Token present: $($token.Length -gt 0), AccountId: $accountId"
+          Write-Host "Debug: File: $filePath"
           
+          # Build the URL with query parameters for access_token and account_id
+          $uploadUrl = "https://www.udrop.com/api/v2/file/upload"
           $curlArgs = @(
             "--show-error",
             "--form", "access_token=$token",
@@ -275,11 +277,10 @@ jobs:
           if ($folderId) {
             $curlArgs += @("--form", "folder_id=$folderId")
           }
-          
-          Write-Host "Debug: Curl args = $($curlArgs -join ' ')"
+          $curlArgs += $uploadUrl
 
           try {
-            $uploadRaw = & curl.exe "https://www.udrop.com/api/v2/file/upload" @curlArgs
+            $uploadRaw = & curl.exe @curlArgs
             if ($LASTEXITCODE -ne 0) {
               Write-Host "Upload request failed via curl."
               exit 1
