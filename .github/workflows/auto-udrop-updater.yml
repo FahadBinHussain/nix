@@ -242,7 +242,7 @@ jobs:
 
       - name: Upload to uDrop
         if: env.SKIP_UPLOAD == 'false'
-        shell: powershell
+        shell: pwsh
         run: |
           function Get-UdropAuth {
             param(
@@ -345,36 +345,18 @@ jobs:
             exit 0
           }
 
-          # Use .NET multipart upload to avoid curl/form encoding issues on Windows runners.
-          Add-Type -AssemblyName System.Net.Http
-          $httpClient = New-Object System.Net.Http.HttpClient
-          $multipart = New-Object System.Net.Http.MultipartFormDataContent
-          $multipart.Add((New-Object System.Net.Http.StringContent($Token)), "access_token")
-          $multipart.Add((New-Object System.Net.Http.StringContent($AccId)), "account_id")
-          if ($folderId) {
-            $multipart.Add((New-Object System.Net.Http.StringContent($folderId)), "folder_id")
+          $form = @{
+            access_token = $Token
+            account_id = $AccId
+            upload_file = Get-Item -Path $env:FILE_NAME
           }
+          if ($folderId) { $form.folder_id = $folderId }
 
-          $fileStream = [System.IO.File]::OpenRead((Resolve-Path $env:FILE_NAME))
           try {
-            $fileContent = New-Object System.Net.Http.StreamContent($fileStream)
-            $fileContent.Headers.ContentType = [System.Net.Http.Headers.MediaTypeHeaderValue]::Parse("application/octet-stream")
-            $multipart.Add($fileContent, "upload_file", [System.IO.Path]::GetFileName($env:FILE_NAME))
-
-            $uploadResponse = $httpClient.PostAsync("https://www.udrop.com/api/v2/file/upload", $multipart).GetAwaiter().GetResult()
-            $uploadResult = $uploadResponse.Content.ReadAsStringAsync().GetAwaiter().GetResult()
-          } finally {
-            if ($fileStream) { $fileStream.Dispose() }
-            if ($multipart) { $multipart.Dispose() }
-            if ($httpClient) { $httpClient.Dispose() }
-          }
-
-          $uploadJson = $null
-          try {
-            $uploadJson = $uploadResult | ConvertFrom-Json
+            $uploadJson = Invoke-RestMethod -Uri "https://www.udrop.com/api/v2/file/upload" -Method Post -Form $form
+            $uploadResult = $uploadJson | ConvertTo-Json -Depth 10 -Compress
           } catch {
-            Write-Host "Upload failed: uDrop returned a non-JSON response."
-            Write-Host $uploadResult
+            Write-Host "Upload request failed: $($_.Exception.Message)"
             exit 1
           }
 
