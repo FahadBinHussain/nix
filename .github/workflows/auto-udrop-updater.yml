@@ -242,134 +242,111 @@ jobs:
 
       - name: Upload to uDrop
         if: env.SKIP_UPLOAD == 'false'
-        shell: pwsh
+        shell: bash
         run: |
-          function Get-UdropAuth {
-            param(
-              [string]$Key1,
-              [string]$Key2
-            )
+          echo "Mirroring ${FILE_NAME} to uDrop..."
 
-            $raw = $null
-            try {
-              $raw = (Invoke-WebRequest -Uri "https://www.udrop.com/api/v2/authorize" -Method Post -Body @{ key1 = $Key1; key2 = $Key2 } -UseBasicParsing).Content
-            } catch {
-              return $null
-            }
-
-            if (-not $raw) { return $null }
-
-            $json = $null
-            try {
-              $json = $raw | ConvertFrom-Json
-            } catch {
-              return $null
-            }
-
-            $token = @(
-              $json.access_token,
-              $json.token,
-              $json.data.access_token,
-              $json.data.token,
-              $json.response.access_token,
-              $json.response.token
-            ) | Where-Object { $_ } | Select-Object -First 1
-
-            $accountId = @(
-              $json.account_id,
-              $json.acc_id,
-              $json.user_id,
-              $json.data.account_id,
-              $json.data.acc_id,
-              $json.data.user_id,
-              $json.response.account_id,
-              $json.response.acc_id,
-              $json.response.user_id
-            ) | Where-Object { $_ } | Select-Object -First 1
-
-            if ($token) { $token = "$token".Trim() }
-            if ($accountId) { $accountId = "$accountId".Trim() }
-
-            return @{
-              status = $json._status
-              token = $token
-              account_id = $accountId
-              raw = $raw
-            }
-          }
-
-          Write-Host "Mirroring $($env:FILE_NAME) to uDrop..."
-          $k1 = "${{ secrets.UDROP_KEY1 }}"
-          $k2 = "${{ secrets.UDROP_KEY2 }}"
-          $Token = $null
-          $AccId = $null
-
-          $auth = Get-UdropAuth -Key1 $k1 -Key2 $k2
-          if ($auth) {
-            $Token = $auth.token
-            $AccId = $auth.account_id
-          }
-
-          if (-not $Token -or -not $AccId) {
-            Write-Host "uDrop auth failed."
-            if ($auth) {
-              Write-Host "Auth status: $($auth.status)"
-            } else {
-              Write-Host "Auth response could not be parsed or returned no token/account_id."
-            }
+          AUTH_JSON="$(curl -fsS -X POST "https://www.udrop.com/api/v2/authorize" \
+            -d "key1=${{ secrets.UDROP_KEY1 }}" \
+            -d "key2=${{ secrets.UDROP_KEY2 }}")" || {
+            echo "uDrop auth request failed."
             exit 1
           }
 
-          # Idempotency: check if same filename already exists in target folder before uploading.
-          $folderId = "${{ secrets.UDROP_FOLDER_ID }}"
-          $listBody = @{
-            access_token = $Token
-            account_id = $AccId
-          }
-          if ($folderId) { $listBody.parent_folder_id = $folderId }
+          export AUTH_JSON
+          AUTH_STATUS="$(python - <<'PY'
+import json, os
+data = json.loads(os.environ["AUTH_JSON"])
+print(data.get("_status",""))
+PY
+          )"
+          TOKEN="$(python - <<'PY'
+import json, os
+data = json.loads(os.environ["AUTH_JSON"])
+vals = [
+    data.get("access_token"),
+    data.get("token"),
+    (data.get("data") or {}).get("access_token"),
+    (data.get("data") or {}).get("token"),
+    (data.get("response") or {}).get("access_token"),
+    (data.get("response") or {}).get("token"),
+]
+print(next((str(v).strip() for v in vals if v), ""))
+PY
+          )"
+          ACC_ID="$(python - <<'PY'
+import json, os
+data = json.loads(os.environ["AUTH_JSON"])
+vals = [
+    data.get("account_id"),
+    data.get("acc_id"),
+    data.get("user_id"),
+    (data.get("data") or {}).get("account_id"),
+    (data.get("data") or {}).get("acc_id"),
+    (data.get("data") or {}).get("user_id"),
+    (data.get("response") or {}).get("account_id"),
+    (data.get("response") or {}).get("acc_id"),
+    (data.get("response") or {}).get("user_id"),
+]
+print(next((str(v).strip() for v in vals if v), ""))
+PY
+          )"
 
-          $listRes = $null
-          try {
-            $listRes = Invoke-RestMethod -Uri "https://www.udrop.com/api/v2/folder/listing" -Method Post -Body $listBody
-          } catch {
-            Write-Host "Warning: folder/listing check failed via Invoke-RestMethod: $($_.Exception.Message)"
+          if [ "$AUTH_STATUS" != "success" ] || [ -z "$TOKEN" ] || [ -z "$ACC_ID" ]; then
+            echo "uDrop auth failed."
+            echo "$AUTH_JSON"
+            exit 1
+          fi
+
+          LIST_JSON="$(curl -fsS -X POST "https://www.udrop.com/api/v2/folder/listing" \
+            -d "access_token=${TOKEN}" \
+            -d "account_id=${ACC_ID}" \
+            ${UDROP_FOLDER_ID:+-d "parent_folder_id=${UDROP_FOLDER_ID}"})" || {
+            echo "uDrop folder listing failed."
+            exit 1
           }
 
-          $existing = $null
-          if ($listRes -and $listRes.data -and $listRes.data.files) {
-            $existing = $listRes.data.files | Where-Object { $_.filename -eq $env:FILE_NAME } | Select-Object -First 1
-          }
+          export LIST_JSON
+          EXISTS="$(python - <<'PY'
+import json, os
+data = json.loads(os.environ["LIST_JSON"])
+files = ((data.get("data") or {}).get("files") or [])
+target = os.environ["FILE_NAME"]
+print("yes" if any((f or {}).get("filename") == target for f in files) else "no")
+PY
+          )"
 
-          if ($existing) {
-            Write-Host "File already exists on uDrop, skipping upload: $($env:FILE_NAME)"
+          if [ "$EXISTS" = "yes" ]; then
+            echo "File already exists on uDrop, skipping upload: ${FILE_NAME}"
             exit 0
-          }
+          fi
 
-          $uploadUrl = "https://www.udrop.com/api/v2/file/upload?access_token=$([uri]::EscapeDataString($Token))&account_id=$([uri]::EscapeDataString($AccId))"
-          if ($folderId) {
-            $uploadUrl += "&folder_id=$([uri]::EscapeDataString($folderId))"
-          }
-          $form = @{
-            upload_file = Get-Item -Path $env:FILE_NAME
-          }
-
-          try {
-            $uploadJson = Invoke-RestMethod -Uri $uploadUrl -Method Post -Form $form
-            $uploadResult = $uploadJson | ConvertTo-Json -Depth 10 -Compress
-          } catch {
-            Write-Host "Upload request failed: $($_.Exception.Message)"
+          UPLOAD_JSON="$(curl -sS -X POST "https://www.udrop.com/api/v2/file/upload" \
+            -F "access_token=${TOKEN}" \
+            -F "account_id=${ACC_ID}" \
+            ${UDROP_FOLDER_ID:+-F "folder_id=${UDROP_FOLDER_ID}"} \
+            -F "upload_file=@${FILE_NAME}")"
+          CURL_EXIT=$?
+          if [ $CURL_EXIT -ne 0 ]; then
+            echo "Upload request failed."
             exit 1
-          }
+          fi
 
-          if ($uploadJson._status -ne "success") {
-            $uploadMessage = if ($uploadJson.response) { $uploadJson.response } else { "Unknown uDrop API error." }
-            Write-Host "Upload failed: $uploadMessage"
-            Write-Host $uploadResult
+          export UPLOAD_JSON
+          UPLOAD_STATUS="$(python - <<'PY'
+import json, os
+data = json.loads(os.environ["UPLOAD_JSON"])
+print(data.get("_status",""))
+PY
+          )"
+          if [ "$UPLOAD_STATUS" != "success" ]; then
+            echo "Upload failed."
+            echo "$UPLOAD_JSON"
             exit 1
-          }
+          fi
 
-          Write-Host "Upload Complete!"
-          Write-Host $uploadResult
+          echo "Upload Complete!"
+          echo "$UPLOAD_JSON"
 
       - name: Update Memory Secret
         if: env.SHOULD_UPDATE_MEMORY == 'true'
