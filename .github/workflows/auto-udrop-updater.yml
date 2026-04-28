@@ -308,6 +308,98 @@ jobs:
           }
 
           $filePath = (Resolve-Path -LiteralPath $env:FILE_NAME).Path
+          $fileInfo = Get-Item -LiteralPath $filePath
+          $fileName = $fileInfo.Name
+          $fileSize = $fileInfo.Length
+
+          function Test-DDownloadUploadResult {
+            param(
+              [Parameter(Mandatory = $true)]
+              [object]$UploadJson
+            )
+
+            $entry = if ($UploadJson -is [System.Array]) {
+              $UploadJson | Select-Object -First 1
+            } else {
+              $UploadJson
+            }
+
+            $fileCode = "$($entry.file_code)".Trim()
+            $fileStatus = "$($entry.file_status)".Trim()
+
+            if (-not $fileCode -or $fileCode -eq "undef") {
+              return $false
+            }
+
+            if (-not $fileStatus) {
+              return $true
+            }
+
+            return $fileStatus -match '^(OK|success)$'
+          }
+
+          function Test-DDownloadFileExists {
+            param(
+              [Parameter(Mandatory = $true)]
+              [string]$ApiKey,
+              [Parameter(Mandatory = $true)]
+              [string]$Name,
+              [Parameter(Mandatory = $true)]
+              [long]$Size
+            )
+
+            $nameEscaped = [System.Uri]::EscapeDataString($Name)
+            $existsUrl = "https://api-v2.ddownload.com/api/file/exists?key=$ApiKey&name=$nameEscaped&size=$Size"
+            $existsJson = Invoke-RestMethod -Uri $existsUrl -Method Get -TimeoutSec 60
+
+            $exists = ($existsJson.status -eq 200) -and `
+              $existsJson.result -and `
+              ($existsJson.result.exists -eq 1) -and `
+              $existsJson.result.matches -and `
+              ($existsJson.result.matches.Count -gt 0)
+
+            return $exists
+          }
+
+          function Invoke-DDownloadUpload {
+            param(
+              [Parameter(Mandatory = $true)]
+              [string]$UploadUrl,
+              [Parameter(Mandatory = $true)]
+              [string]$SessId,
+              [Parameter(Mandatory = $true)]
+              [string]$FilePath,
+              [string]$UploadType
+            )
+
+            $curlArgs = @(
+              "--silent",
+              "--show-error",
+              "--location",
+              "--request", "POST",
+              "--form", "sess_id=$SessId",
+              "--form", "file=@$FilePath"
+            )
+
+            if ($UploadType) {
+              $curlArgs += @("--form", "utype=$UploadType")
+            }
+
+            $raw = & curl.exe $UploadUrl @curlArgs
+            if ($LASTEXITCODE -ne 0) {
+              throw "curl upload failed with exit code $LASTEXITCODE."
+            }
+
+            if (-not $raw) {
+              throw "DDownload upload returned an empty response."
+            }
+
+            try {
+              return $raw | ConvertFrom-Json
+            } catch {
+              throw "DDownload upload returned non-JSON: $raw"
+            }
+          }
           
           # Step 1: Get upload server and session ID
           try {
@@ -323,6 +415,12 @@ jobs:
             
             $uploadUrl = $serverInfo.result
             $sessId = $serverInfo.sess_id
+
+            if (-not $uploadUrl -or -not $sessId) {
+              Write-Host "Upload server response was incomplete."
+              Write-Host ($serverInfo | ConvertTo-Json -Depth 10 -Compress)
+              exit 1
+            }
             
             Write-Host "Got upload server: $uploadUrl"
           } catch {
@@ -331,28 +429,43 @@ jobs:
           }
           
           # Step 2: Upload file
+          $uploadJson = $null
+          $uploadOk = $false
           try {
-            $formFields = @{
-              sess_id = $sessId
-              file = Get-Item -LiteralPath $filePath
+            $uploadJson = Invoke-DDownloadUpload -UploadUrl $uploadUrl -SessId $sessId -FilePath $filePath
+            $uploadOk = Test-DDownloadUploadResult -UploadJson $uploadJson
+
+            if (-not $uploadOk) {
+              Write-Host "Primary DDownload upload response was not accepted. Retrying with explicit upload type."
+              $uploadJson = Invoke-DDownloadUpload -UploadUrl $uploadUrl -SessId $sessId -FilePath $filePath -UploadType "prem"
+              $uploadOk = Test-DDownloadUploadResult -UploadJson $uploadJson
             }
-            
-            $uploadResult = Invoke-RestMethod `
-              -Uri $uploadUrl `
-              -Method Post `
-              -Form $formFields `
-              -TimeoutSec 1800
-            
-            $resultJson = $uploadResult | ConvertTo-Json -Depth 10 -Compress
-            Write-Host "DDownload Upload Complete!"
-            Write-Host $resultJson
           } catch {
             Write-Host "DDownload upload failed: $($_.Exception.Message)"
-            if ($_.ErrorDetails.Message) {
-              Write-Host $_.ErrorDetails.Message
-            }
             exit 1
           }
+
+          $resultJson = $uploadJson | ConvertTo-Json -Depth 10 -Compress
+
+          if ($uploadOk) {
+            Write-Host "DDownload Upload Complete!"
+            Write-Host $resultJson
+            exit 0
+          }
+
+          Write-Host "DDownload upload response did not confirm success."
+          Write-Host $resultJson
+
+          try {
+            if (Test-DDownloadFileExists -ApiKey $apiKey -Name $fileName -Size $fileSize) {
+              Write-Host "DDownload file existence check confirmed the upload."
+              exit 0
+            }
+          } catch {
+            Write-Host "DDownload post-upload verification failed: $($_.Exception.Message)"
+          }
+
+          exit 1
 
       - name: Update Memory Secret
         if: env.SHOULD_UPDATE_MEMORY == 'true'
