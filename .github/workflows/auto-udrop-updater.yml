@@ -286,21 +286,28 @@ jobs:
             exit 0
           }
 
-          # PowerShell 5.1 does not support Invoke-RestMethod -Form. Use curl.exe multipart upload.
-          $uploadArgs = @(
-            "-sS", "-X", "POST", "https://www.udrop.com/api/v2/file/upload",
-            "--form-string", "access_token=$Token",
-            "--form-string", "account_id=$AccId",
-            "-F", "upload_file=@$env:FILE_NAME"
-          )
+          # Use .NET multipart upload to avoid curl/form encoding issues on Windows runners.
+          Add-Type -AssemblyName System.Net.Http
+          $httpClient = New-Object System.Net.Http.HttpClient
+          $multipart = New-Object System.Net.Http.MultipartFormDataContent
+          $multipart.Add((New-Object System.Net.Http.StringContent($Token)), "access_token")
+          $multipart.Add((New-Object System.Net.Http.StringContent($AccId)), "account_id")
           if ($folderId) {
-            $uploadArgs += @("--form-string", "folder_id=$folderId")
+            $multipart.Add((New-Object System.Net.Http.StringContent($folderId)), "folder_id")
           }
-          $uploadResult = curl.exe @uploadArgs
 
-          if ($LASTEXITCODE -ne 0) {
-            Write-Host "Upload failed."
-            exit 1
+          $fileStream = [System.IO.File]::OpenRead((Resolve-Path $env:FILE_NAME))
+          try {
+            $fileContent = New-Object System.Net.Http.StreamContent($fileStream)
+            $fileContent.Headers.ContentType = [System.Net.Http.Headers.MediaTypeHeaderValue]::Parse("application/octet-stream")
+            $multipart.Add($fileContent, "upload_file", [System.IO.Path]::GetFileName($env:FILE_NAME))
+
+            $uploadResponse = $httpClient.PostAsync("https://www.udrop.com/api/v2/file/upload", $multipart).GetAwaiter().GetResult()
+            $uploadResult = $uploadResponse.Content.ReadAsStringAsync().GetAwaiter().GetResult()
+          } finally {
+            if ($fileStream) { $fileStream.Dispose() }
+            if ($multipart) { $multipart.Dispose() }
+            if ($httpClient) { $httpClient.Dispose() }
           }
 
           $uploadJson = $null
