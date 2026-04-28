@@ -31,6 +31,62 @@ jobs:
       - name: Fetch App via DanStore API
         shell: powershell
         run: |
+          function Get-UdropAuth {
+            param(
+              [string]$Key1,
+              [string]$Key2
+            )
+
+            $raw = $null
+            try {
+              $raw = (Invoke-WebRequest -Uri "https://www.udrop.com/api/v2/authorize" -Method Post -Body @{ key1 = $Key1; key2 = $Key2 } -UseBasicParsing).Content
+            } catch {
+              return $null
+            }
+
+            if (-not $raw) { return $null }
+
+            $json = $null
+            try {
+              $json = $raw | ConvertFrom-Json
+            } catch {
+              return $null
+            }
+
+            $token = @(
+              $json.access_token,
+              $json.token,
+              $json.data.access_token,
+              $json.data.token,
+              $json.response.access_token,
+              $json.response.token
+            ) | Where-Object { $_ } | Select-Object -First 1
+
+            $accountId = @(
+              $json.account_id,
+              $json.acc_id,
+              $json.user_id,
+              $json.data.account_id,
+              $json.data.acc_id,
+              $json.data.user_id,
+              $json.response.account_id,
+              $json.response.acc_id,
+              $json.response.user_id
+            ) | Where-Object { $_ } | Select-Object -First 1
+
+            if ($token) { $token = "$token".Trim() }
+            if ($accountId) { $accountId = "$accountId".Trim() }
+
+            if ($json._status -ne "success" -or -not $token -or -not $accountId) {
+              return $null
+            }
+
+            return @{
+              token = $token
+              account_id = $accountId
+            }
+          }
+
           $productId = "${{ secrets.PRODUCT_ID }}"
 
           if (-not $productId) {
@@ -118,23 +174,30 @@ jobs:
           $folderId = "${{ secrets.UDROP_FOLDER_ID }}"
           $udropHasFile = $false
 
-          if ($k1 -and $k2) {
-            try {
-              $auth = Invoke-RestMethod -Uri "https://www.udrop.com/api/v2/authorize" -Method Post -Body @{ key1 = $k1; key2 = $k2 }
-              $tok = @($auth.access_token, $auth.token, $auth.data.access_token, $auth.response.access_token) | Where-Object { $_ } | Select-Object -First 1
-              $acc = @($auth.account_id, $auth.acc_id, $auth.user_id, $auth.data.account_id, $auth.response.account_id) | Where-Object { $_ } | Select-Object -First 1
-              if ($tok -and $acc) {
-                $listBody = @{ access_token = $tok; account_id = $acc }
-                if ($folderId) { $listBody.parent_folder_id = $folderId }
-                $list = Invoke-RestMethod -Uri "https://www.udrop.com/api/v2/folder/listing" -Method Post -Body $listBody
-                if ($list -and $list.data -and $list.data.files) {
-                  $hit = $list.data.files | Where-Object { $_.filename -eq $fileName } | Select-Object -First 1
-                  if ($hit) { $udropHasFile = $true }
-                }
-              }
-            } catch {
-              Write-Host "Warning: Pre-check on uDrop failed. Continuing with normal download/upload path."
+          if (-not $k1 -or -not $k2) {
+            Write-Host "Error: UDROP_KEY1/UDROP_KEY2 secrets are missing."
+            exit 1
+          }
+
+          try {
+            $auth = Get-UdropAuth -Key1 $k1 -Key2 $k2
+            if (-not $auth) {
+              Write-Host "Error: uDrop auth failed before download. Stopping early to avoid wasting time on a large file."
+              exit 1
             }
+
+            $tok = $auth.token
+            $acc = $auth.account_id
+            $listBody = @{ access_token = $tok; account_id = $acc }
+            if ($folderId) { $listBody.parent_folder_id = $folderId }
+            $list = Invoke-RestMethod -Uri "https://www.udrop.com/api/v2/folder/listing" -Method Post -Body $listBody
+            if ($list -and $list.data -and $list.data.files) {
+              $hit = $list.data.files | Where-Object { $_.filename -eq $fileName } | Select-Object -First 1
+              if ($hit) { $udropHasFile = $true }
+            }
+          } catch {
+            Write-Host "Error: Pre-check on uDrop failed before download: $($_.Exception.Message)"
+            exit 1
           }
 
           if ($udropHasFile) {
@@ -181,82 +244,78 @@ jobs:
         if: env.SKIP_UPLOAD == 'false'
         shell: powershell
         run: |
+          function Get-UdropAuth {
+            param(
+              [string]$Key1,
+              [string]$Key2
+            )
+
+            $raw = $null
+            try {
+              $raw = (Invoke-WebRequest -Uri "https://www.udrop.com/api/v2/authorize" -Method Post -Body @{ key1 = $Key1; key2 = $Key2 } -UseBasicParsing).Content
+            } catch {
+              return $null
+            }
+
+            if (-not $raw) { return $null }
+
+            $json = $null
+            try {
+              $json = $raw | ConvertFrom-Json
+            } catch {
+              return $null
+            }
+
+            $token = @(
+              $json.access_token,
+              $json.token,
+              $json.data.access_token,
+              $json.data.token,
+              $json.response.access_token,
+              $json.response.token
+            ) | Where-Object { $_ } | Select-Object -First 1
+
+            $accountId = @(
+              $json.account_id,
+              $json.acc_id,
+              $json.user_id,
+              $json.data.account_id,
+              $json.data.acc_id,
+              $json.data.user_id,
+              $json.response.account_id,
+              $json.response.acc_id,
+              $json.response.user_id
+            ) | Where-Object { $_ } | Select-Object -First 1
+
+            if ($token) { $token = "$token".Trim() }
+            if ($accountId) { $accountId = "$accountId".Trim() }
+
+            return @{
+              status = $json._status
+              token = $token
+              account_id = $accountId
+              raw = $raw
+            }
+          }
+
           Write-Host "Mirroring $($env:FILE_NAME) to uDrop..."
           $k1 = "${{ secrets.UDROP_KEY1 }}"
           $k2 = "${{ secrets.UDROP_KEY2 }}"
-          $AuthBody = @{ key1 = $k1; key2 = $k2 }
-          $AuthRes = $null
           $Token = $null
           $AccId = $null
 
-          try {
-            $AuthRes = Invoke-RestMethod -Uri "https://www.udrop.com/api/v2/authorize" -Method Post -Body $AuthBody
-          } catch {
-            Write-Host "Warning: Invoke-RestMethod auth failed: $($_.Exception.Message)"
-          }
-
-          if ($AuthRes) {
-            $Token = @(
-              $AuthRes.access_token,
-              $AuthRes.token,
-              $AuthRes.response.access_token,
-              $AuthRes.response.token,
-              $AuthRes.data.access_token,
-              $AuthRes.data.token
-            ) | Where-Object { $_ } | Select-Object -First 1
-
-            $AccId = @(
-              $AuthRes.account_id,
-              $AuthRes.acc_id,
-              $AuthRes.user_id,
-              $AuthRes.response.account_id,
-              $AuthRes.response.acc_id,
-              $AuthRes.response.user_id,
-              $AuthRes.data.account_id,
-              $AuthRes.data.acc_id,
-              $AuthRes.data.user_id
-            ) | Where-Object { $_ } | Select-Object -First 1
-          }
-
-          if ($Token) { $Token = "$Token".Trim() }
-          if ($AccId) { $AccId = "$AccId".Trim() }
-
-          # Fallback auth via curl in case PowerShell parsing/shape differs.
-          if (-not $Token -or -not $AccId) {
-            Write-Host "Primary auth parse failed; trying curl auth fallback..."
-            $authRaw = curl.exe -sS -X POST "https://www.udrop.com/api/v2/authorize" -d "key1=$k1&key2=$k2"
-            if ($LASTEXITCODE -eq 0 -and $authRaw) {
-              try {
-                $authJson = $authRaw | ConvertFrom-Json
-                $Token = @(
-                  $authJson.access_token,
-                  $authJson.token,
-                  $authJson.response.access_token,
-                  $authJson.response.token,
-                  $authJson.data.access_token,
-                  $authJson.data.token
-                ) | Where-Object { $_ } | Select-Object -First 1
-                $AccId = @(
-                  $authJson.account_id,
-                  $authJson.acc_id,
-                  $authJson.user_id,
-                  $authJson.response.account_id,
-                  $authJson.response.acc_id,
-                  $authJson.response.user_id,
-                  $authJson.data.account_id,
-                  $authJson.data.acc_id,
-                  $authJson.data.user_id
-                ) | Where-Object { $_ } | Select-Object -First 1
-              } catch {
-                Write-Host "Warning: curl auth response was not JSON."
-              }
-            }
+          $auth = Get-UdropAuth -Key1 $k1 -Key2 $k2
+          if ($auth) {
+            $Token = $auth.token
+            $AccId = $auth.account_id
           }
 
           if (-not $Token -or -not $AccId) {
             Write-Host "uDrop auth failed."
-            if ($AuthRes) {
-              Write-Host "Auth response keys: $((($AuthRes | Get-Member -MemberType NoteProperty | Select-Object -ExpandProperty Name) -join ', '))"
+            if ($auth) {
+              Write-Host "Auth status: $($auth.status)"
+            } else {
+              Write-Host "Auth response could not be parsed or returned no token/account_id."
             }
             exit 1
           }
