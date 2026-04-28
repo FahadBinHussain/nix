@@ -297,6 +297,110 @@ jobs:
             Add-Content -Path $env:GITHUB_ENV -Value "UDROP_FAILED=true"
           }
 
+      - name: Install MEGAcmd
+        if: env.SKIP_UPLOAD == 'false'
+        shell: pwsh
+        run: |
+          $installerUrl = "https://megalink.nz/MEGAcmdSetup64.exe"
+          $installerPath = Join-Path $env:RUNNER_TEMP "MEGAcmdSetup64.exe"
+          $megaCmdDir = Join-Path $env:LOCALAPPDATA "MEGAcmd"
+
+          Write-Host "Installing MEGAcmd..."
+          curl.exe -L --fail --silent --show-error --output $installerPath $installerUrl
+
+          if ($LASTEXITCODE -ne 0 -or -not (Test-Path $installerPath)) {
+            Write-Host "Failed to download MEGAcmd installer."
+            exit 1
+          }
+
+          $installProc = Start-Process -FilePath $installerPath -ArgumentList "/S" -Wait -PassThru -WindowStyle Hidden
+
+          if ($installProc.ExitCode -ne 0) {
+            Write-Host "MEGAcmd silent install failed with exit code $($installProc.ExitCode)."
+            exit 1
+          }
+
+          if (-not (Test-Path (Join-Path $megaCmdDir "mega-put.bat"))) {
+            Write-Host "MEGAcmd install completed but client commands were not found in $megaCmdDir."
+            exit 1
+          }
+
+          Add-Content -Path $env:GITHUB_ENV -Value "MEGACMD_DIR=$megaCmdDir"
+
+      - name: Upload to MEGA
+        if: env.SKIP_UPLOAD == 'false'
+        shell: pwsh
+        run: |
+          Write-Host "Mirroring $($env:FILE_NAME) to MEGA..."
+
+          $megaEmail = "${{ secrets.MEGA_EMAIL }}"
+          $megaPassword = "${{ secrets.MEGA_PASSWORD }}"
+          $megaRemoteDir = "${{ secrets.MEGA_REMOTE_DIR }}"
+          $megaCmdDir = if ($env:MEGACMD_DIR) { $env:MEGACMD_DIR } else { Join-Path $env:LOCALAPPDATA "MEGAcmd" }
+          $filePath = (Resolve-Path -LiteralPath $env:FILE_NAME).Path
+
+          if (-not $megaEmail -or -not $megaPassword) {
+            Write-Host "Error: MEGA_EMAIL/MEGA_PASSWORD secrets are missing."
+            exit 1
+          }
+
+          if (-not $megaRemoteDir) {
+            $megaRemoteDir = "/"
+          } elseif (-not $megaRemoteDir.StartsWith("/")) {
+            $megaRemoteDir = "/$megaRemoteDir"
+          }
+
+          $megaLogin = Join-Path $megaCmdDir "mega-login.bat"
+          $megaLogout = Join-Path $megaCmdDir "mega-logout.bat"
+          $megaMkdir = Join-Path $megaCmdDir "mega-mkdir.bat"
+          $megaPut = Join-Path $megaCmdDir "mega-put.bat"
+          $megaWhoAmI = Join-Path $megaCmdDir "mega-whoami.bat"
+          $megaUpdate = Join-Path $megaCmdDir "mega-update.bat"
+
+          foreach ($cmd in @($megaLogin, $megaLogout, $megaMkdir, $megaPut, $megaWhoAmI)) {
+            if (-not (Test-Path $cmd)) {
+              Write-Host "Required MEGAcmd client was not found: $cmd"
+              exit 1
+            }
+          }
+
+          try {
+            if (Test-Path $megaUpdate) {
+              & $megaUpdate --auto=OFF | Out-Host
+            }
+
+            & $megaLogout 2>$null | Out-Null
+            & $megaLogin $megaEmail $megaPassword | Out-Host
+
+            if ($LASTEXITCODE -ne 0) {
+              throw "MEGA login failed."
+            }
+
+            & $megaWhoAmI | Out-Host
+            if ($LASTEXITCODE -ne 0) {
+              throw "MEGA session validation failed."
+            }
+
+            if ($megaRemoteDir -ne "/") {
+              & $megaMkdir -p $megaRemoteDir | Out-Host
+              if ($LASTEXITCODE -ne 0) {
+                throw "Failed to ensure remote MEGA folder exists: $megaRemoteDir"
+              }
+            }
+
+            & $megaPut $filePath $megaRemoteDir | Out-Host
+            if ($LASTEXITCODE -ne 0) {
+              throw "MEGA upload failed."
+            }
+
+            Write-Host "MEGA Upload Complete!"
+          } catch {
+            Write-Host $_.Exception.Message
+            exit 1
+          } finally {
+            & $megaLogout 2>$null | Out-Null
+          }
+
       - name: Upload to DDownload
         if: env.SKIP_UPLOAD == 'false' && env.DDOWNLOAD_ENABLED == 'true'
         shell: pwsh

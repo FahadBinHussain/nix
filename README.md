@@ -1,9 +1,10 @@
-# Nix - Microsoft Store Mirror to uDrop
+# Nix - Microsoft Store Mirror to uDrop and MEGA
 
 Production-ready GitHub Actions pipeline that:
 - resolves the latest Microsoft Store package for a target `PRODUCT_ID` via DanStore API,
 - prevents duplicate uploads using both state markers and destination-side checks,
 - uploads new builds to uDrop,
+- uploads new builds to MEGA,
 - stores sync state in private GitHub Secrets (not public branches).
 
 ## What This Project Does
@@ -16,7 +17,8 @@ This repository runs an automated sync workflow for one Microsoft Store app:
 4. Check if the exact filename already exists in uDrop (idempotency guard).
 5. Download package only when required.
 6. Upload to uDrop.
-7. Update private memory marker (`NIX_LAST_VERSION`) to avoid reprocessing.
+7. Upload to MEGA.
+8. Update private memory marker (`NIX_LAST_VERSION`) to avoid reprocessing.
 
 ## Workflow Triggers
 
@@ -42,6 +44,12 @@ Concurrency:
   - `/authorize`
   - `/folder/listing`
   - `/file/upload`
+- Destination: MEGA via MEGAcmd
+  - official Windows installer
+  - `mega-login`
+  - `mega-mkdir`
+  - `mega-put`
+  - `mega-logout`
 
 ### State Management
 - Persistent marker is stored in GitHub Secret: `NIX_LAST_VERSION`
@@ -65,12 +73,15 @@ Required:
 - `PRODUCT_ID`: Microsoft Store Product ID (example: `9WZDNCRFJ3TJ`)
 - `UDROP_KEY1`: uDrop API key 1
 - `UDROP_KEY2`: uDrop API key 2
+- `MEGA_EMAIL`: MEGA account email
+- `MEGA_PASSWORD`: MEGA account password
 - `GH_PAT`: GitHub token used for both:
   - updating `NIX_LAST_VERSION`
   - external `workflow_dispatch` calls from `cron-job.org`
 
 Optional (recommended):
 - `UDROP_FOLDER_ID`: Target uDrop folder ID. If omitted, root folder is used.
+- `MEGA_REMOTE_DIR`: Target folder in MEGA. If omitted, upload goes to `/`.
 - `NIX_LAST_VERSION`: Initial sync marker (set `none` for first run).
 
 ## Required Token Permissions
@@ -102,6 +113,7 @@ Version sorting:
 
 - This workflow intentionally supports frequent re-runs.
 - If the same build already exists in uDrop, it should skip upload and finish quickly.
+- On upload runs, the workflow mirrors to uDrop first and then to MEGA.
 - State is private (secret-based), not committed to a branch.
 - External scheduling via `cron-job.org` is preferred for better timing precision than GitHub's native scheduler.
 
