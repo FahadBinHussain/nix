@@ -264,7 +264,6 @@ jobs:
           $curlArgs = @(
             "--silent",
             "--show-error",
-            "--request", "POST",
             "--form", "access_token=$token",
             "--form", "account_id=$accountId",
             "--form", "upload_file=@$filePath"
