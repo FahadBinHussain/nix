@@ -254,43 +254,9 @@ jobs:
           }
 
           export AUTH_JSON
-          AUTH_STATUS="$(python - <<'PY'
-import json, os
-data = json.loads(os.environ["AUTH_JSON"])
-print(data.get("_status",""))
-PY
-          )"
-          TOKEN="$(python - <<'PY'
-import json, os
-data = json.loads(os.environ["AUTH_JSON"])
-vals = [
-    data.get("access_token"),
-    data.get("token"),
-    (data.get("data") or {}).get("access_token"),
-    (data.get("data") or {}).get("token"),
-    (data.get("response") or {}).get("access_token"),
-    (data.get("response") or {}).get("token"),
-]
-print(next((str(v).strip() for v in vals if v), ""))
-PY
-          )"
-          ACC_ID="$(python - <<'PY'
-import json, os
-data = json.loads(os.environ["AUTH_JSON"])
-vals = [
-    data.get("account_id"),
-    data.get("acc_id"),
-    data.get("user_id"),
-    (data.get("data") or {}).get("account_id"),
-    (data.get("data") or {}).get("acc_id"),
-    (data.get("data") or {}).get("user_id"),
-    (data.get("response") or {}).get("account_id"),
-    (data.get("response") or {}).get("acc_id"),
-    (data.get("response") or {}).get("user_id"),
-]
-print(next((str(v).strip() for v in vals if v), ""))
-PY
-          )"
+          AUTH_STATUS="$(python -c 'import json, os; data=json.loads(os.environ["AUTH_JSON"]); print(data.get("_status",""))')"
+          TOKEN="$(python -c 'import json, os; data=json.loads(os.environ["AUTH_JSON"]); vals=[data.get("access_token"), data.get("token"), (data.get("data") or {}).get("access_token"), (data.get("data") or {}).get("token"), (data.get("response") or {}).get("access_token"), (data.get("response") or {}).get("token")]; print(next((str(v).strip() for v in vals if v), ""))')"
+          ACC_ID="$(python -c 'import json, os; data=json.loads(os.environ["AUTH_JSON"]); vals=[data.get("account_id"), data.get("acc_id"), data.get("user_id"), (data.get("data") or {}).get("account_id"), (data.get("data") or {}).get("acc_id"), (data.get("data") or {}).get("user_id"), (data.get("response") or {}).get("account_id"), (data.get("response") or {}).get("acc_id"), (data.get("response") or {}).get("user_id")]; print(next((str(v).strip() for v in vals if v), ""))')"
 
           if [ "$AUTH_STATUS" != "success" ] || [ -z "$TOKEN" ] || [ -z "$ACC_ID" ]; then
             echo "uDrop auth failed."
@@ -298,34 +264,37 @@ PY
             exit 1
           fi
 
-          LIST_JSON="$(curl -fsS -X POST "https://www.udrop.com/api/v2/folder/listing" \
-            -d "access_token=${TOKEN}" \
-            -d "account_id=${ACC_ID}" \
-            ${UDROP_FOLDER_ID:+-d "parent_folder_id=${UDROP_FOLDER_ID}"})" || {
+          LIST_ARGS=(
+            -fsS -X POST "https://www.udrop.com/api/v2/folder/listing"
+            -d "access_token=${TOKEN}"
+            -d "account_id=${ACC_ID}"
+          )
+          if [ -n "${UDROP_FOLDER_ID}" ]; then
+            LIST_ARGS+=(-d "parent_folder_id=${UDROP_FOLDER_ID}")
+          fi
+          LIST_JSON="$(curl "${LIST_ARGS[@]}")" || {
             echo "uDrop folder listing failed."
             exit 1
           }
 
           export LIST_JSON
-          EXISTS="$(python - <<'PY'
-import json, os
-data = json.loads(os.environ["LIST_JSON"])
-files = ((data.get("data") or {}).get("files") or [])
-target = os.environ["FILE_NAME"]
-print("yes" if any((f or {}).get("filename") == target for f in files) else "no")
-PY
-          )"
+          EXISTS="$(python -c 'import json, os; data=json.loads(os.environ["LIST_JSON"]); files=((data.get("data") or {}).get("files") or []); target=os.environ["FILE_NAME"]; print("yes" if any((f or {}).get("filename") == target for f in files) else "no")')"
 
           if [ "$EXISTS" = "yes" ]; then
             echo "File already exists on uDrop, skipping upload: ${FILE_NAME}"
             exit 0
           fi
 
-          UPLOAD_JSON="$(curl -sS -X POST "https://www.udrop.com/api/v2/file/upload" \
-            -F "access_token=${TOKEN}" \
-            -F "account_id=${ACC_ID}" \
-            ${UDROP_FOLDER_ID:+-F "folder_id=${UDROP_FOLDER_ID}"} \
-            -F "upload_file=@${FILE_NAME}")"
+          UPLOAD_ARGS=(
+            -sS -X POST "https://www.udrop.com/api/v2/file/upload"
+            -F "access_token=${TOKEN}"
+            -F "account_id=${ACC_ID}"
+            -F "upload_file=@${FILE_NAME}"
+          )
+          if [ -n "${UDROP_FOLDER_ID}" ]; then
+            UPLOAD_ARGS+=(-F "folder_id=${UDROP_FOLDER_ID}")
+          fi
+          UPLOAD_JSON="$(curl "${UPLOAD_ARGS[@]}")"
           CURL_EXIT=$?
           if [ $CURL_EXIT -ne 0 ]; then
             echo "Upload request failed."
@@ -333,12 +302,7 @@ PY
           fi
 
           export UPLOAD_JSON
-          UPLOAD_STATUS="$(python - <<'PY'
-import json, os
-data = json.loads(os.environ["UPLOAD_JSON"])
-print(data.get("_status",""))
-PY
-          )"
+          UPLOAD_STATUS="$(python -c 'import json, os; data=json.loads(os.environ["UPLOAD_JSON"]); print(data.get("_status",""))')"
           if [ "$UPLOAD_STATUS" != "success" ]; then
             echo "Upload failed."
             echo "$UPLOAD_JSON"
