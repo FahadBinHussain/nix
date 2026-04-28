@@ -218,6 +218,9 @@ jobs:
             ) | Where-Object { $_ } | Select-Object -First 1
           }
 
+          if ($Token) { $Token = "$Token".Trim() }
+          if ($AccId) { $AccId = "$AccId".Trim() }
+
           # Fallback auth via curl in case PowerShell parsing/shape differs.
           if (-not $Token -or -not $AccId) {
             Write-Host "Primary auth parse failed; trying curl auth fallback..."
@@ -286,17 +289,33 @@ jobs:
           # PowerShell 5.1 does not support Invoke-RestMethod -Form. Use curl.exe multipart upload.
           $uploadArgs = @(
             "-sS", "-X", "POST", "https://www.udrop.com/api/v2/file/upload",
-            "-F", "access_token=$Token",
-            "-F", "account_id=$AccId",
+            "--form-string", "access_token=$Token",
+            "--form-string", "account_id=$AccId",
             "-F", "upload_file=@$env:FILE_NAME"
           )
           if ($folderId) {
-            $uploadArgs += @("-F", "folder_id=$folderId")
+            $uploadArgs += @("--form-string", "folder_id=$folderId")
           }
           $uploadResult = curl.exe @uploadArgs
 
           if ($LASTEXITCODE -ne 0) {
             Write-Host "Upload failed."
+            exit 1
+          }
+
+          $uploadJson = $null
+          try {
+            $uploadJson = $uploadResult | ConvertFrom-Json
+          } catch {
+            Write-Host "Upload failed: uDrop returned a non-JSON response."
+            Write-Host $uploadResult
+            exit 1
+          }
+
+          if ($uploadJson._status -ne "success") {
+            $uploadMessage = if ($uploadJson.response) { $uploadJson.response } else { "Unknown uDrop API error." }
+            Write-Host "Upload failed: $uploadMessage"
+            Write-Host $uploadResult
             exit 1
           }
 
