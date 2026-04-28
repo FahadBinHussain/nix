@@ -11,6 +11,9 @@ concurrency:
 permissions:
   contents: read
 
+env:
+  DDOWNLOAD_ENABLED: 'false'
+
 jobs:
   nix-sync:
     runs-on: windows-latest
@@ -295,7 +298,7 @@ jobs:
           }
 
       - name: Upload to DDownload
-        if: env.SKIP_UPLOAD == 'false'
+        if: env.SKIP_UPLOAD == 'false' && env.DDOWNLOAD_ENABLED == 'true'
         shell: pwsh
         run: |
           Write-Host "Mirroring $($env:FILE_NAME) to DDownload..."
