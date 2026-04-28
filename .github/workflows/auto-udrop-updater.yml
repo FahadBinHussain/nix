@@ -258,72 +258,29 @@ jobs:
           }
 
           $filePath = (Resolve-Path -LiteralPath $env:FILE_NAME).Path
-          $fileName = [System.IO.Path]::GetFileName($filePath)
           
-          # Create boundary for multipart form
-          $boundary = [System.Guid]::NewGuid().ToString()
-          $LF = "`r`n"
-          
-          # Build multipart form data manually
-          $bodyLines = @(
-            "--$boundary",
-            "Content-Disposition: form-data; name=`"access_token`"$LF",
-            $token,
-            "--$boundary",
-            "Content-Disposition: form-data; name=`"account_id`"$LF",
-            $accountId
-          )
-          
-          if ($folderId) {
-            $bodyLines += @(
-              "--$boundary",
-              "Content-Disposition: form-data; name=`"folder_id`"$LF",
-              $folderId
-            )
+          # Use Invoke-RestMethod with -Form parameter (PowerShell 6.1+)
+          $formFields = @{
+            access_token = $token
+            account_id = $accountId
+            upload_file = Get-Item -LiteralPath $filePath
           }
           
-          $bodyLines += @(
-            "--$boundary",
-            "Content-Disposition: form-data; name=`"upload_file`"; filename=`"$fileName`"",
-            "Content-Type: application/octet-stream$LF"
-          )
-          
-          $header = $bodyLines -join $LF
-          $footer = "$LF--$boundary--$LF"
-          
-          # Read file as bytes
-          $fileBytes = [System.IO.File]::ReadAllBytes($filePath)
-          
-          # Combine header, file, and footer
-          $headerBytes = [System.Text.Encoding]::UTF8.GetBytes($header)
-          $footerBytes = [System.Text.Encoding]::UTF8.GetBytes($footer)
-          
-          $bodyBytes = $headerBytes + $fileBytes + $footerBytes
-          
-          try {
-            $response = Invoke-WebRequest `
-              -Uri "https://www.udrop.com/api/v2/file/upload" `
-              -Method Post `
-              -ContentType "multipart/form-data; boundary=$boundary" `
-              -Body $bodyBytes `
-              -UseBasicParsing `
-              -TimeoutSec 1800
-            
-            $uploadRaw = $response.Content
-          } catch {
-            Write-Host "Upload request failed: $($_.Exception.Message)"
-            if ($_.Exception.Response) {
-              $reader = New-Object System.IO.StreamReader($_.Exception.Response.GetResponseStream())
-              Write-Host $reader.ReadToEnd()
-            }
-            exit 1
+          if ($folderId) {
+            $formFields.folder_id = $folderId
           }
 
           try {
-            $uploadJson = $uploadRaw | ConvertFrom-Json
+            $uploadJson = Invoke-RestMethod `
+              -Uri "https://www.udrop.com/api/v2/file/upload" `
+              -Method Post `
+              -Form $formFields `
+              -TimeoutSec 1800
           } catch {
-            Write-Host "Upload response was not valid JSON."
-            Write-Host $uploadRaw
+            Write-Host "Upload request failed: $($_.Exception.Message)"
+            if ($_.ErrorDetails.Message) {
+              Write-Host $_.ErrorDetails.Message
+            }
             exit 1
           }
 
