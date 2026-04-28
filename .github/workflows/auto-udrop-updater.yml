@@ -281,18 +281,78 @@ jobs:
             if ($_.ErrorDetails.Message) {
               Write-Host $_.ErrorDetails.Message
             }
-            exit 1
+            Write-Host "Skipping uDrop upload, will continue with other providers."
+            Add-Content -Path $env:GITHUB_ENV -Value "UDROP_FAILED=true"
           }
 
-          $uploadResult = $uploadJson | ConvertTo-Json -Depth 10 -Compress
-          if ($uploadJson._status -ne "success") {
-            Write-Host "Upload failed."
+          if ($uploadJson -and $uploadJson._status -eq "success") {
+            $uploadResult = $uploadJson | ConvertTo-Json -Depth 10 -Compress
+            Write-Host "uDrop Upload Complete!"
             Write-Host $uploadResult
-            exit 1
+          } else {
+            Write-Host "uDrop upload did not succeed, continuing with other providers."
+            Add-Content -Path $env:GITHUB_ENV -Value "UDROP_FAILED=true"
           }
 
-          Write-Host "Upload Complete!"
-          Write-Host $uploadResult
+      - name: Upload to DDownload
+        if: env.SKIP_UPLOAD == 'false'
+        shell: pwsh
+        run: |
+          Write-Host "Mirroring $($env:FILE_NAME) to DDownload..."
+
+          $apiKey = "${{ secrets.DDOWNLOAD_API_KEY }}"
+          
+          if (-not $apiKey) {
+            Write-Host "DDOWNLOAD_API_KEY secret is missing. Skipping DDownload upload."
+            exit 0
+          }
+
+          $filePath = (Resolve-Path -LiteralPath $env:FILE_NAME).Path
+          
+          # Step 1: Get upload server and session ID
+          try {
+            $serverInfo = Invoke-RestMethod `
+              -Uri "https://api-v2.ddownload.com/api/upload/server?key=$apiKey" `
+              -Method Get `
+              -TimeoutSec 30
+            
+            if ($serverInfo.status -ne 200) {
+              Write-Host "Failed to get upload server: $($serverInfo.msg)"
+              exit 1
+            }
+            
+            $uploadUrl = $serverInfo.result
+            $sessId = $serverInfo.sess_id
+            
+            Write-Host "Got upload server: $uploadUrl"
+          } catch {
+            Write-Host "Failed to get upload server: $($_.Exception.Message)"
+            exit 1
+          }
+          
+          # Step 2: Upload file
+          try {
+            $formFields = @{
+              sess_id = $sessId
+              file = Get-Item -LiteralPath $filePath
+            }
+            
+            $uploadResult = Invoke-RestMethod `
+              -Uri $uploadUrl `
+              -Method Post `
+              -Form $formFields `
+              -TimeoutSec 1800
+            
+            $resultJson = $uploadResult | ConvertTo-Json -Depth 10 -Compress
+            Write-Host "DDownload Upload Complete!"
+            Write-Host $resultJson
+          } catch {
+            Write-Host "DDownload upload failed: $($_.Exception.Message)"
+            if ($_.ErrorDetails.Message) {
+              Write-Host $_.ErrorDetails.Message
+            }
+            exit 1
+          }
 
       - name: Update Memory Secret
         if: env.SHOULD_UPDATE_MEMORY == 'true'
