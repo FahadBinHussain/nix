@@ -285,15 +285,18 @@ jobs:
             exit 0
           fi
 
+          TOKEN_ENC="$(TOKEN="$TOKEN" python -c 'import urllib.parse, os; print(urllib.parse.quote(os.environ["TOKEN"], safe=""))')"
+          ACC_ID_ENC="$(ACC_ID="$ACC_ID" python -c 'import urllib.parse, os; print(urllib.parse.quote(os.environ["ACC_ID"], safe=""))')"
+          UPLOAD_URL="https://www.udrop.com/api/v2/file/upload?access_token=${TOKEN_ENC}&account_id=${ACC_ID_ENC}"
+          if [ -n "${UDROP_FOLDER_ID}" ]; then
+            FOLDER_ENC="$(FOLDER="$UDROP_FOLDER_ID" python -c 'import urllib.parse, os; print(urllib.parse.quote(os.environ["FOLDER"], safe=""))')"
+            UPLOAD_URL="${UPLOAD_URL}&folder_id=${FOLDER_ENC}"
+          fi
+
           UPLOAD_ARGS=(
-            -sS -X POST "https://www.udrop.com/api/v2/file/upload"
-            -F "access_token=${TOKEN}"
-            -F "account_id=${ACC_ID}"
+            -sS -X POST "${UPLOAD_URL}"
             -F "upload_file=@${FILE_NAME}"
           )
-          if [ -n "${UDROP_FOLDER_ID}" ]; then
-            UPLOAD_ARGS+=(-F "folder_id=${UDROP_FOLDER_ID}")
-          fi
           UPLOAD_JSON="$(curl "${UPLOAD_ARGS[@]}")"
           CURL_EXIT=$?
           if [ $CURL_EXIT -ne 0 ]; then
