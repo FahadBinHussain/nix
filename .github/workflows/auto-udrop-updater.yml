@@ -258,39 +258,64 @@ jobs:
           }
 
           $filePath = (Resolve-Path -LiteralPath $env:FILE_NAME).Path
+          $fileName = [System.IO.Path]::GetFileName($filePath)
           
-          # Use PowerShell's multipart form upload
-          Add-Type -AssemblyName System.Net.Http
-          $httpClient = New-Object System.Net.Http.HttpClient
-          $httpClient.Timeout = [TimeSpan]::FromMinutes(30)
+          # Create boundary for multipart form
+          $boundary = [System.Guid]::NewGuid().ToString()
+          $LF = "`r`n"
           
-          $form = New-Object System.Net.Http.MultipartFormDataContent
-          $form.Add((New-Object System.Net.Http.StringContent($token)), "access_token")
-          $form.Add((New-Object System.Net.Http.StringContent($accountId)), "account_id")
+          # Build multipart form data manually
+          $bodyLines = @(
+            "--$boundary",
+            "Content-Disposition: form-data; name=`"access_token`"$LF",
+            $token,
+            "--$boundary",
+            "Content-Disposition: form-data; name=`"account_id`"$LF",
+            $accountId
+          )
+          
           if ($folderId) {
-            $form.Add((New-Object System.Net.Http.StringContent($folderId)), "folder_id")
+            $bodyLines += @(
+              "--$boundary",
+              "Content-Disposition: form-data; name=`"folder_id`"$LF",
+              $folderId
+            )
           }
           
-          $fileStream = [System.IO.File]::OpenRead($filePath)
-          $fileContent = New-Object System.Net.Http.StreamContent($fileStream)
-          $fileContent.Headers.ContentType = [System.Net.Http.Headers.MediaTypeHeaderValue]::Parse("application/octet-stream")
-          $form.Add($fileContent, "upload_file", [System.IO.Path]::GetFileName($filePath))
-
+          $bodyLines += @(
+            "--$boundary",
+            "Content-Disposition: form-data; name=`"upload_file`"; filename=`"$fileName`"",
+            "Content-Type: application/octet-stream$LF"
+          )
+          
+          $header = $bodyLines -join $LF
+          $footer = "$LF--$boundary--$LF"
+          
+          # Read file as bytes
+          $fileBytes = [System.IO.File]::ReadAllBytes($filePath)
+          
+          # Combine header, file, and footer
+          $headerBytes = [System.Text.Encoding]::UTF8.GetBytes($header)
+          $footerBytes = [System.Text.Encoding]::UTF8.GetBytes($footer)
+          
+          $bodyBytes = $headerBytes + $fileBytes + $footerBytes
+          
           try {
-            $response = $httpClient.PostAsync("https://www.udrop.com/api/v2/file/upload", $form).Result
-            $uploadRaw = $response.Content.ReadAsStringAsync().Result
-            $fileStream.Close()
-            $httpClient.Dispose()
+            $response = Invoke-WebRequest `
+              -Uri "https://www.udrop.com/api/v2/file/upload" `
+              -Method Post `
+              -ContentType "multipart/form-data; boundary=$boundary" `
+              -Body $bodyBytes `
+              -UseBasicParsing `
+              -TimeoutSec 1800
             
-            if (-not $response.IsSuccessStatusCode) {
-              Write-Host "Upload request failed with status: $($response.StatusCode)"
-              Write-Host $uploadRaw
-              exit 1
-            }
+            $uploadRaw = $response.Content
           } catch {
-            $fileStream.Close()
-            $httpClient.Dispose()
             Write-Host "Upload request failed: $($_.Exception.Message)"
+            if ($_.Exception.Response) {
+              $reader = New-Object System.IO.StreamReader($_.Exception.Response.GetResponseStream())
+              Write-Host $reader.ReadToEnd()
+            }
             exit 1
           }
 
