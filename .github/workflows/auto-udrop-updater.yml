@@ -301,7 +301,7 @@ jobs:
         if: env.SKIP_UPLOAD == 'false'
         shell: pwsh
         run: |
-          $installerUrl = "https://megalink.nz/MEGAcmdSetup64.exe"
+          $installerUrl = "https://mega.nz/MEGAcmdSetup64.exe"
           $installerPath = Join-Path $env:RUNNER_TEMP "MEGAcmdSetup64.exe"
           $megaCmdDir = Join-Path $env:LOCALAPPDATA "MEGAcmd"
 
