@@ -257,19 +257,35 @@ jobs:
             exit 1
           }
 
-          $form = @{
-            access_token = $token
-            account_id = $accountId
-            upload_file = Get-Item -Path $env:FILE_NAME
-          }
+          $filePath = (Resolve-Path -LiteralPath $env:FILE_NAME).Path
+          $curlArgs = @(
+            "--silent",
+            "--show-error",
+            "--request", "POST",
+            "--form", "access_token=$token",
+            "--form", "account_id=$accountId",
+            "--form", "upload_file=@$filePath"
+          )
           if ($folderId) {
-            $form.folder_id = $folderId
+            $curlArgs += @("--form", "folder_id=$folderId")
           }
 
           try {
-            $uploadJson = Invoke-RestMethod -Uri "https://www.udrop.com/api/v2/file/upload" -Method Post -Form $form
+            $uploadRaw = & curl.exe "https://www.udrop.com/api/v2/file/upload" @curlArgs
+            if ($LASTEXITCODE -ne 0) {
+              Write-Host "Upload request failed via curl."
+              exit 1
+            }
           } catch {
             Write-Host "Upload request failed: $($_.Exception.Message)"
+            exit 1
+          }
+
+          try {
+            $uploadJson = $uploadRaw | ConvertFrom-Json
+          } catch {
+            Write-Host "Upload response was not valid JSON."
+            Write-Host $uploadRaw
             exit 1
           }
 
