@@ -9,10 +9,11 @@ concurrency:
   cancel-in-progress: true
 
 permissions:
-  contents: read
+  contents: write
 
 env:
-  TERABOX_ENABLED: 'true'
+  UDROP_ENABLED: 'false'
+  TERABOX_ENABLED: 'false'
   MEGA_ENABLED: 'false'
   DDOWNLOAD_ENABLED: 'false'
 
@@ -173,51 +174,56 @@ jobs:
 
           Write-Host "New package found: $fileName (version: $($target.version))"
           
-          # Check uDrop first to avoid duplicate download/upload when file already exists there.
-          $k1 = "${{ secrets.UDROP_KEY1 }}"
-          $k2 = "${{ secrets.UDROP_KEY2 }}"
-          $folderId = "${{ secrets.UDROP_FOLDER_ID }}"
-          $udropHasFile = $false
+          $udropEnabled = "${{ env.UDROP_ENABLED }}" -eq "true"
+          if ($udropEnabled) {
+            # Check uDrop first to avoid duplicate download/upload when file already exists there.
+            $k1 = "${{ secrets.UDROP_KEY1 }}"
+            $k2 = "${{ secrets.UDROP_KEY2 }}"
+            $folderId = "${{ secrets.UDROP_FOLDER_ID }}"
+            $udropHasFile = $false
 
-          if (-not $k1 -or -not $k2) {
-            Write-Host "Error: UDROP_KEY1/UDROP_KEY2 secrets are missing."
-            exit 1
-          }
-
-          try {
-            $auth = Get-UdropAuth -Key1 $k1 -Key2 $k2
-            if (-not $auth) {
-              Write-Host "Error: uDrop auth failed before download. Stopping early to avoid wasting time on a large file."
+            if (-not $k1 -or -not $k2) {
+              Write-Host "Error: UDROP_KEY1/UDROP_KEY2 secrets are missing."
               exit 1
             }
 
-            $tok = $auth.token
-            $acc = $auth.account_id
-            Add-Content -Path $env:GITHUB_ENV -Value "UDROP_TOKEN=$tok"
-            Add-Content -Path $env:GITHUB_ENV -Value "UDROP_ACCOUNT_ID=$acc"
-            $listBody = @{ access_token = $tok; account_id = $acc }
-            if ($folderId) { $listBody.parent_folder_id = $folderId }
-            $list = Invoke-RestMethod -Uri "https://www.udrop.com/api/v2/folder/listing" -Method Post -Body $listBody
-            if ($list -and $list.data -and $list.data.files) {
-              $hit = $list.data.files | Where-Object { $_.filename -eq $fileName } | Select-Object -First 1
-              if ($hit) { $udropHasFile = $true }
-            }
-          } catch {
-            Write-Host "Error: Pre-check on uDrop failed before download: $($_.Exception.Message)"
-            exit 1
-          }
+            try {
+              $auth = Get-UdropAuth -Key1 $k1 -Key2 $k2
+              if (-not $auth) {
+                Write-Host "Error: uDrop auth failed before download. Stopping early to avoid wasting time on a large file."
+                exit 1
+              }
 
-          if ($udropHasFile) {
-            Write-Host "File already exists on uDrop. Skipping download/upload and updating memory marker."
-            Add-Content -Path $env:GITHUB_ENV -Value "SKIP_UPLOAD=true"
-            Add-Content -Path $env:GITHUB_ENV -Value "FILE_NAME=$fileName"
-            if ($versionMarker) {
-              Add-Content -Path $env:GITHUB_ENV -Value "FILE_VERSION=$versionMarker|$fileMarker"
-            } else {
-              Add-Content -Path $env:GITHUB_ENV -Value "FILE_VERSION=$fileMarker"
+              $tok = $auth.token
+              $acc = $auth.account_id
+              Add-Content -Path $env:GITHUB_ENV -Value "UDROP_TOKEN=$tok"
+              Add-Content -Path $env:GITHUB_ENV -Value "UDROP_ACCOUNT_ID=$acc"
+              $listBody = @{ access_token = $tok; account_id = $acc }
+              if ($folderId) { $listBody.parent_folder_id = $folderId }
+              $list = Invoke-RestMethod -Uri "https://www.udrop.com/api/v2/folder/listing" -Method Post -Body $listBody
+              if ($list -and $list.data -and $list.data.files) {
+                $hit = $list.data.files | Where-Object { $_.filename -eq $fileName } | Select-Object -First 1
+                if ($hit) { $udropHasFile = $true }
+              }
+            } catch {
+              Write-Host "Error: Pre-check on uDrop failed before download: $($_.Exception.Message)"
+              exit 1
             }
-            Add-Content -Path $env:GITHUB_ENV -Value "SHOULD_UPDATE_MEMORY=true"
-            exit 0
+
+            if ($udropHasFile) {
+              Write-Host "File already exists on uDrop. Skipping download/upload and updating memory marker."
+              Add-Content -Path $env:GITHUB_ENV -Value "SKIP_UPLOAD=true"
+              Add-Content -Path $env:GITHUB_ENV -Value "FILE_NAME=$fileName"
+              if ($versionMarker) {
+                Add-Content -Path $env:GITHUB_ENV -Value "FILE_VERSION=$versionMarker|$fileMarker"
+              } else {
+                Add-Content -Path $env:GITHUB_ENV -Value "FILE_VERSION=$fileMarker"
+              }
+              Add-Content -Path $env:GITHUB_ENV -Value "SHOULD_UPDATE_MEMORY=true"
+              exit 0
+            }
+          } else {
+            Write-Host "uDrop pre-check disabled."
           }
 
           Write-Host "Downloading package..."
@@ -245,10 +251,20 @@ jobs:
           } else {
             Add-Content -Path $env:GITHUB_ENV -Value "FILE_VERSION=$fileMarker"
           }
+          $releaseTagSource = if ($versionMarker) { "v$versionMarker" } else { $fileName }
+          $releaseTag = ($releaseTagSource -replace '[^A-Za-z0-9._-]+', '-').Trim('-')
+          if (-not $releaseTag) {
+            $releaseTag = "archive-$([DateTimeOffset]::UtcNow.ToUnixTimeSeconds())"
+          }
+          $releaseTitle = if ($versionMarker) { "Version $versionMarker" } else { $fileName }
+          Add-Content -Path $env:GITHUB_ENV -Value "RELEASE_TAG=$releaseTag"
+          Add-Content -Path $env:GITHUB_ENV -Value "RELEASE_TITLE=$releaseTitle"
+          Add-Content -Path $env:GITHUB_ENV -Value "PACKAGE_VERSION=$($target.version)"
+          Add-Content -Path $env:GITHUB_ENV -Value "SOURCE_URL=$($target.url)"
           Add-Content -Path $env:GITHUB_ENV -Value "SHOULD_UPDATE_MEMORY=true"
 
       - name: Upload to uDrop
-        if: env.SKIP_UPLOAD == 'false'
+        if: env.SKIP_UPLOAD == 'false' && env.UDROP_ENABLED == 'true'
         shell: pwsh
         run: |
           Write-Host "Mirroring $($env:FILE_NAME) to uDrop..."
@@ -297,6 +313,53 @@ jobs:
           } else {
             Write-Host "uDrop upload did not succeed, continuing with other providers."
             Add-Content -Path $env:GITHUB_ENV -Value "UDROP_FAILED=true"
+          }
+
+      - name: Archive to GitHub Release
+        if: env.SKIP_UPLOAD == 'false'
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          Write-Host "Archiving $($env:FILE_NAME) to private GitHub Releases..."
+
+          $filePath = (Resolve-Path -LiteralPath $env:FILE_NAME).Path
+          $tag = "$env:RELEASE_TAG".Trim()
+          $title = "$env:RELEASE_TITLE".Trim()
+          $packageVersion = "$env:PACKAGE_VERSION".Trim()
+          $sourceUrl = "$env:SOURCE_URL".Trim()
+          $repo = "${{ github.repository }}"
+
+          if (-not $tag) {
+            Write-Host "RELEASE_TAG is missing."
+            exit 1
+          }
+
+          if (-not $title) {
+            $title = $tag
+          }
+
+          $notesPath = Join-Path $env:RUNNER_TEMP "release-notes.md"
+          $capturedAt = [DateTime]::UtcNow.ToString("yyyy-MM-dd HH:mm:ss 'UTC'")
+          $notes = @"
+Private archive build captured by workflow.
+
+- File: $($env:FILE_NAME)
+- Version: $packageVersion
+- Source: $sourceUrl
+- Captured: $capturedAt
+"@
+          Set-Content -LiteralPath $notesPath -Value $notes
+
+          gh release view $tag --repo $repo *> $null
+          if ($LASTEXITCODE -ne 0) {
+            gh release create $tag $filePath --repo $repo --title $title --notes-file $notesPath
+          } else {
+            gh release upload $tag $filePath --repo $repo --clobber
+          }
+
+          if ($LASTEXITCODE -ne 0) {
+            exit 1
           }
 
       - name: Install TeraBox client
