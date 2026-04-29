@@ -351,16 +351,42 @@ jobs:
           ) -join "`r`n"
           Set-Content -LiteralPath $notesPath -Value $notes
 
-          gh release view $tag --repo $repo *> $null
-          if ($LASTEXITCODE -ne 0) {
-            gh release create $tag $filePath --repo $repo --title $title --notes-file $notesPath
-          } else {
-            gh release upload $tag $filePath --repo $repo --clobber
+          $releaseViewOutput = & gh release view $tag --repo $repo --json assets 2>&1
+          $releaseExists = ($LASTEXITCODE -eq 0)
+
+          if ($releaseExists) {
+            $releaseInfo = $releaseViewOutput | ConvertFrom-Json
+            $assetExists = $false
+
+            if ($releaseInfo.assets) {
+              $assetExists = @($releaseInfo.assets | Where-Object { $_.name -eq $env:FILE_NAME }).Count -gt 0
+            }
+
+            if ($assetExists) {
+              Write-Host "Release $tag already contains asset $($env:FILE_NAME). Skipping upload."
+              exit 0
+            }
+
+            Write-Host "Release $tag already exists, but asset is missing. Uploading asset now."
+            & gh release upload $tag $filePath --repo $repo
+            if ($LASTEXITCODE -ne 0) {
+              exit 1
+            }
+            exit 0
           }
 
+          $releaseViewText = ($releaseViewOutput | ForEach-Object { "$_" }) -join "`n"
+          if ($releaseViewText -notmatch "release not found") {
+            Write-Host $releaseViewText
+            exit 1
+          }
+
+          & gh release create $tag $filePath --repo $repo --title $title --notes-file $notesPath
           if ($LASTEXITCODE -ne 0) {
             exit 1
           }
+
+          Write-Host "GitHub Release created successfully."
 
       - name: Install TeraBox client
         if: env.SHOULD_UPDATE_MEMORY == 'true' && env.TERABOX_ENABLED == 'true'
