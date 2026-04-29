@@ -1,10 +1,11 @@
-# Nix - Microsoft Store Mirror to uDrop and MEGA
+# Nix - Microsoft Store Mirror to uDrop, MEGA, and TeraBox
 
 Production-ready GitHub Actions pipeline that:
 - resolves the latest Microsoft Store package for a target `PRODUCT_ID` via DanStore API,
 - prevents duplicate uploads using both state markers and destination-side checks,
 - uploads new builds to uDrop,
 - uploads new builds to MEGA,
+- uploads new builds to TeraBox,
 - stores sync state in private GitHub Secrets (not public branches).
 
 ## What This Project Does
@@ -18,7 +19,8 @@ This repository runs an automated sync workflow for one Microsoft Store app:
 5. Download package only when required.
 6. Upload to uDrop.
 7. Upload to MEGA.
-8. Update private memory marker (`NIX_LAST_VERSION`) to avoid reprocessing.
+8. Upload to TeraBox.
+9. Update private memory marker (`NIX_LAST_VERSION`) to avoid reprocessing.
 
 ## Workflow Triggers
 
@@ -50,6 +52,10 @@ Concurrency:
   - `mega-mkdir`
   - `mega-put`
   - `mega-logout`
+- Destination: TeraBox via `terabox-upload-tool`
+  - unofficial Node client
+  - file list check
+  - upload only when filename is missing
 
 ### State Management
 - Persistent marker is stored in GitHub Secret: `NIX_LAST_VERSION`
@@ -82,6 +88,12 @@ Required:
 Optional (recommended):
 - `UDROP_FOLDER_ID`: Target uDrop folder ID. If omitted, root folder is used.
 - `MEGA_REMOTE_DIR`: Target folder in MEGA. If omitted, upload goes to `/`.
+- `TERABOX_NDUS`: TeraBox `ndus` cookie value from your logged-in browser session.
+- `TERABOX_JSTOKEN`: TeraBox `jsToken` value from browser network requests.
+- `TERABOX_APP_ID`: Usually `250528`. Set it explicitly if your session uses a different value.
+- `TERABOX_REMOTE_DIR`: Target folder in TeraBox. If omitted, upload goes to `/nix`.
+- `TERABOX_BDSTOKEN`: Optional TeraBox token if your session requires it.
+- `TERABOX_BROWSER_ID`: Optional browser identifier if your session requires it.
 - `NIX_LAST_VERSION`: Initial sync marker (set `none` for first run).
 
 ## Required Token Permissions
@@ -114,6 +126,10 @@ Version sorting:
 - This workflow intentionally supports frequent re-runs.
 - If the same build already exists in uDrop, it should skip upload and finish quickly.
 - On upload runs, the workflow mirrors to uDrop first and then to MEGA.
+- The MEGA step checks the target folder first and skips `mega-put` if the same filename already exists there.
+- The TeraBox step checks the target folder first and skips upload if the same filename already exists there.
+- MEGA, DDownload, and TeraBox are disabled by default behind workflow env flags.
+- The TeraBox integration uses an unofficial reverse-engineered client and may break if TeraBox changes its web API.
 - State is private (secret-based), not committed to a branch.
 - External scheduling via `cron-job.org` is preferred for better timing precision than GitHub's native scheduler.
 

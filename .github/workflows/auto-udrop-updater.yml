@@ -12,6 +12,8 @@ permissions:
   contents: read
 
 env:
+  TERABOX_ENABLED: 'true'
+  MEGA_ENABLED: 'false'
   DDOWNLOAD_ENABLED: 'false'
 
 jobs:
@@ -297,8 +299,83 @@ jobs:
             Add-Content -Path $env:GITHUB_ENV -Value "UDROP_FAILED=true"
           }
 
+      - name: Install TeraBox client
+        if: env.SHOULD_UPDATE_MEMORY == 'true' && env.TERABOX_ENABLED == 'true'
+        shell: pwsh
+        run: |
+          $tbDir = Join-Path $env:RUNNER_TEMP "terabox-client"
+
+          if (Test-Path $tbDir) {
+            Remove-Item -LiteralPath $tbDir -Recurse -Force
+          }
+
+          New-Item -ItemType Directory -Force -Path $tbDir | Out-Null
+          Push-Location $tbDir
+
+          npm init -y | Out-Null
+          npm install --no-fund --no-audit --loglevel=error terabox-upload-tool@1.3.1
+
+          if ($LASTEXITCODE -ne 0) {
+            Pop-Location
+            Write-Host "Failed to install TeraBox client package."
+            exit 1
+          }
+
+          Pop-Location
+
+          $modulePath = Join-Path $tbDir "node_modules\terabox-upload-tool"
+          if (-not (Test-Path $modulePath)) {
+            Write-Host "TeraBox client package was installed but the module path was not found: $modulePath"
+            exit 1
+          }
+
+          Add-Content -Path $env:GITHUB_ENV -Value "TERABOX_CLIENT_DIR=$tbDir"
+          Add-Content -Path $env:GITHUB_ENV -Value "TERABOX_UPLOAD_TOOL_PATH=$modulePath"
+
+      - name: Upload to TeraBox
+        if: env.SHOULD_UPDATE_MEMORY == 'true' && env.TERABOX_ENABLED == 'true'
+        shell: pwsh
+        env:
+          TERABOX_NDUS: ${{ secrets.TERABOX_NDUS }}
+          TERABOX_JSTOKEN: ${{ secrets.TERABOX_JSTOKEN }}
+          TERABOX_APP_ID: ${{ secrets.TERABOX_APP_ID }}
+          TERABOX_BDSTOKEN: ${{ secrets.TERABOX_BDSTOKEN }}
+          TERABOX_BROWSER_ID: ${{ secrets.TERABOX_BROWSER_ID }}
+          TERABOX_REMOTE_DIR: ${{ secrets.TERABOX_REMOTE_DIR }}
+        run: |
+          Write-Host "Mirroring $($env:FILE_NAME) to TeraBox..."
+
+          if (-not $env:FILE_NAME) {
+            Write-Host "FILE_NAME is missing. TeraBox upload cannot continue."
+            exit 1
+          }
+
+          if (-not $env:TERABOX_NDUS -or -not $env:TERABOX_JSTOKEN) {
+            Write-Host "TERABOX_NDUS or TERABOX_JSTOKEN is missing."
+            exit 1
+          }
+
+          if (-not $env:TERABOX_UPLOAD_TOOL_PATH) {
+            Write-Host "TERABOX_UPLOAD_TOOL_PATH is missing from the install step."
+            exit 1
+          }
+
+          if (-not $env:TERABOX_APP_ID) {
+            $env:TERABOX_APP_ID = "250528"
+          }
+
+          if (-not $env:TERABOX_REMOTE_DIR) {
+            $env:TERABOX_REMOTE_DIR = "/nix"
+          }
+
+          node .github\scripts\terabox-sync.cjs
+
+          if ($LASTEXITCODE -ne 0) {
+            exit 1
+          }
+
       - name: Install MEGAcmd
-        if: env.SKIP_UPLOAD == 'false'
+        if: env.SKIP_UPLOAD == 'false' && env.MEGA_ENABLED == 'true'
         shell: pwsh
         run: |
           $installerUrl = "https://mega.nz/MEGAcmdSetup64.exe"
@@ -328,7 +405,7 @@ jobs:
           Add-Content -Path $env:GITHUB_ENV -Value "MEGACMD_DIR=$megaCmdDir"
 
       - name: Upload to MEGA
-        if: env.SKIP_UPLOAD == 'false'
+        if: env.SKIP_UPLOAD == 'false' && env.MEGA_ENABLED == 'true'
         shell: pwsh
         run: |
           Write-Host "Mirroring $($env:FILE_NAME) to MEGA..."
@@ -338,6 +415,7 @@ jobs:
           $megaRemoteDir = "${{ secrets.MEGA_REMOTE_DIR }}"
           $megaCmdDir = if ($env:MEGACMD_DIR) { $env:MEGACMD_DIR } else { Join-Path $env:LOCALAPPDATA "MEGAcmd" }
           $filePath = (Resolve-Path -LiteralPath $env:FILE_NAME).Path
+          $fileName = [System.IO.Path]::GetFileName($filePath)
 
           if (-not $megaEmail -or -not $megaPassword) {
             Write-Host "Error: MEGA_EMAIL/MEGA_PASSWORD secrets are missing."
@@ -353,11 +431,12 @@ jobs:
           $megaLogin = Join-Path $megaCmdDir "mega-login.bat"
           $megaLogout = Join-Path $megaCmdDir "mega-logout.bat"
           $megaMkdir = Join-Path $megaCmdDir "mega-mkdir.bat"
+          $megaFind = Join-Path $megaCmdDir "mega-find.bat"
           $megaPut = Join-Path $megaCmdDir "mega-put.bat"
           $megaWhoAmI = Join-Path $megaCmdDir "mega-whoami.bat"
           $megaUpdate = Join-Path $megaCmdDir "mega-update.bat"
 
-          foreach ($cmd in @($megaLogin, $megaLogout, $megaMkdir, $megaPut, $megaWhoAmI)) {
+          foreach ($cmd in @($megaLogin, $megaLogout, $megaMkdir, $megaFind, $megaPut, $megaWhoAmI)) {
             if (-not (Test-Path $cmd)) {
               Write-Host "Required MEGAcmd client was not found: $cmd"
               exit 1
@@ -388,12 +467,26 @@ jobs:
               }
             }
 
-            & $megaPut $filePath $megaRemoteDir | Out-Host
+            $megaFindOutput = & $megaFind $megaRemoteDir "--pattern=$fileName" --type=f 2>&1
             if ($LASTEXITCODE -ne 0) {
-              throw "MEGA upload failed."
+              $megaFindText = ($megaFindOutput | ForEach-Object { "$_" }) -join "`n"
+              throw "MEGA existence check failed.`n$megaFindText"
             }
 
-            Write-Host "MEGA Upload Complete!"
+            $megaExisting = $megaFindOutput |
+              ForEach-Object { "$_".Trim() } |
+              Where-Object { $_ -and $_.EndsWith("/$fileName") }
+
+            if ($megaExisting) {
+              Write-Host "File already exists in MEGA. Skipping upload."
+            } else {
+              & $megaPut $filePath $megaRemoteDir | Out-Host
+              if ($LASTEXITCODE -ne 0) {
+                throw "MEGA upload failed."
+              }
+
+              Write-Host "MEGA Upload Complete!"
+            }
           } catch {
             Write-Host $_.Exception.Message
             exit 1
