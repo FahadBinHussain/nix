@@ -91,8 +91,7 @@ Optional (recommended):
 - `TERABOX_NDUS`: TeraBox `ndus` cookie value from your logged-in browser session.
 - `TERABOX_JSTOKEN`: TeraBox `jsToken` value from browser network requests.
 - `TERABOX_APP_ID`: Usually `250528`. Set it explicitly if your session uses a different value.
-- `TERABOX_UPLOAD_ID`: TeraBox `uploadid` value captured from an upload-related browser request.
-- `TERABOX_BROWSER_ID`: TeraBox `browserid` cookie value from your logged-in browser session.
+- `TERABOX_BROWSER_ID`: Optional TeraBox `browserid` cookie value from your logged-in browser session.
 - `TERABOX_REMOTE_DIR`: Target folder in TeraBox. If omitted, upload goes to `/nix`.
 - `TERABOX_BDSTOKEN`: Optional TeraBox token if your session requires it.
 - `NIX_LAST_VERSION`: Initial sync marker (set `none` for first run).

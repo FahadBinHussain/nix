@@ -42,13 +42,12 @@ async function main() {
     ndus: process.env.TERABOX_NDUS,
     jsToken: process.env.TERABOX_JSTOKEN,
     appId: process.env.TERABOX_APP_ID || '250528',
-    uploadId: process.env.TERABOX_UPLOAD_ID || '',
     bdstoken: process.env.TERABOX_BDSTOKEN || '',
     browserId: process.env.TERABOX_BROWSER_ID || '',
   };
 
-  if (!credentials.ndus || !credentials.jsToken || !credentials.uploadId || !credentials.browserId) {
-    fail('TERABOX_NDUS, TERABOX_JSTOKEN, TERABOX_UPLOAD_ID, and TERABOX_BROWSER_ID are required.');
+  if (!credentials.ndus || !credentials.jsToken) {
+    fail('TERABOX_NDUS and TERABOX_JSTOKEN are required.');
   }
 
   const uploader = new TeraboxUploader(credentials);
