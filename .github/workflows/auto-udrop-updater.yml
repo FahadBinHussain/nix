@@ -341,14 +341,14 @@ jobs:
 
           $notesPath = Join-Path $env:RUNNER_TEMP "release-notes.md"
           $capturedAt = [DateTime]::UtcNow.ToString("yyyy-MM-dd HH:mm:ss 'UTC'")
-          $notes = @"
-Private archive build captured by workflow.
-
-- File: $($env:FILE_NAME)
-- Version: $packageVersion
-- Source: $sourceUrl
-- Captured: $capturedAt
-"@
+          $notes = @(
+            "Private archive build captured by workflow.",
+            "",
+            "- File: $($env:FILE_NAME)",
+            "- Version: $packageVersion",
+            "- Source: $sourceUrl",
+            "- Captured: $capturedAt"
+          ) -join "`r`n"
           Set-Content -LiteralPath $notesPath -Value $notes
 
           gh release view $tag --repo $repo *> $null
