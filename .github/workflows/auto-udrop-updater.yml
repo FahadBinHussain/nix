@@ -339,6 +339,7 @@ jobs:
           TERABOX_NDUS: ${{ secrets.TERABOX_NDUS }}
           TERABOX_JSTOKEN: ${{ secrets.TERABOX_JSTOKEN }}
           TERABOX_APP_ID: ${{ secrets.TERABOX_APP_ID }}
+          TERABOX_UPLOAD_ID: ${{ secrets.TERABOX_UPLOAD_ID }}
           TERABOX_BDSTOKEN: ${{ secrets.TERABOX_BDSTOKEN }}
           TERABOX_BROWSER_ID: ${{ secrets.TERABOX_BROWSER_ID }}
           TERABOX_REMOTE_DIR: ${{ secrets.TERABOX_REMOTE_DIR }}
@@ -350,8 +351,8 @@ jobs:
             exit 1
           }
 
-          if (-not $env:TERABOX_NDUS -or -not $env:TERABOX_JSTOKEN) {
-            Write-Host "TERABOX_NDUS or TERABOX_JSTOKEN is missing."
+          if (-not $env:TERABOX_NDUS -or -not $env:TERABOX_JSTOKEN -or -not $env:TERABOX_UPLOAD_ID -or -not $env:TERABOX_BROWSER_ID) {
+            Write-Host "One or more required TeraBox secrets are missing: TERABOX_NDUS, TERABOX_JSTOKEN, TERABOX_UPLOAD_ID, TERABOX_BROWSER_ID."
             exit 1
           }
 
