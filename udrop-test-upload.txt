@@ -1,4 +1,0 @@
-uDrop local test file
-Created for workflow upload debugging.
-
-If this uploads successfully, the auth, folder listing, and multipart path are working.
