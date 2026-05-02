@@ -1,4 +1,28 @@
-# Nix - Private App Archive
+# Nix - Private App Archive Template
+
+Template repository for creating a private Microsoft Store app archive.
+
+Use this repo as a template, create your generated repository as **private**, and let GitHub Actions save each detected app version as a private GitHub Release asset.
+
+This project is designed for personal archival. It does not grant permission to redistribute proprietary apps, installers, packages, or binaries. If you make your generated repository public or publish archived files elsewhere, you are responsible for that choice.
+
+## Template Usage
+
+Recommended setup:
+
+1. Click **Use this template** on GitHub.
+2. Create a new repository from the template.
+3. Set the new repository visibility to **Private**.
+4. Add the required secrets listed below.
+5. Run the workflow manually or trigger it from `cron-job.org`.
+
+Why use a template instead of a fork:
+
+- A generated repository can be private from the start.
+- GitHub shows `generated from <template-owner>/<template-repo>` on the generated repo.
+- The generated repo starts as its own archive, without carrying the template's full git history.
+
+## What This Project Does
 
 Production-ready GitHub Actions pipeline that:
 - resolves the latest Microsoft Store package for a target `PRODUCT_ID` via DanStore API,
@@ -6,8 +30,6 @@ Production-ready GitHub Actions pipeline that:
 - archives new builds to private GitHub Releases,
 - keeps optional third-party mirror code in the repo behind disabled flags,
 - stores sync state in private GitHub Secrets.
-
-## What This Project Does
 
 This repository runs an automated sync workflow for one Microsoft Store app:
 
@@ -21,7 +43,7 @@ This repository runs an automated sync workflow for one Microsoft Store app:
 
 ## Workflow Triggers
 
-Workflow file: [auto-udrop-updater.yml](/C:/Users/Admin/Downloads/nix/.github/workflows/auto-udrop-updater.yml)
+Workflow file: [auto-udrop-updater.yml](.github/workflows/auto-udrop-updater.yml)
 
 Triggers:
 - `push`
@@ -41,20 +63,10 @@ Concurrency:
   - `GET /api/packages?id=<PRODUCT_ID>&type=ProductId&environment=Production`
 - Primary archive: GitHub Releases
 - Optional mirror code kept in workflow, disabled by default:
-- Destination: uDrop API v2
-  - `/authorize`
-  - `/folder/listing`
-  - `/file/upload`
-- Destination: MEGA via MEGAcmd
-  - official Windows installer
-  - `mega-login`
-  - `mega-mkdir`
-  - `mega-put`
-  - `mega-logout`
-- Destination: TeraBox via `terabox-upload-tool`
-  - unofficial Node client
-  - file list check
-  - upload only when filename is missing
+  - uDrop API v2
+  - MEGA via MEGAcmd
+  - TeraBox via `terabox-upload-tool`
+  - DDownload API
 
 ### State Management
 - Persistent marker is stored in GitHub Secret: `NIX_LAST_VERSION`
@@ -134,9 +146,10 @@ Version sorting:
 
 ## How To Use
 
-1. Add required secrets.
-2. Configure `cron-job.org` or trigger manually.
-3. Check Actions logs for:
+1. Generate a private repository from this template.
+2. Add required secrets.
+3. Configure `cron-job.org` or trigger manually.
+4. Check Actions logs for:
    - package resolution
    - dedupe decision
    - upload status
@@ -148,7 +161,7 @@ Use `cron-job.org` to trigger the workflow on an exact schedule.
 
 Request configuration:
 - URL:
-  `https://api.github.com/repos/fahadbinhussain/nix/actions/workflows/auto-udrop-updater.yml/dispatches`
+  `https://api.github.com/repos/OWNER/REPO/actions/workflows/auto-udrop-updater.yml/dispatches`
 - Method:
   `POST`
 - Content-Type:
@@ -212,8 +225,10 @@ Practical note:
 
 - Secrets are never stored in repository files.
 - Sync memory is stored in private GitHub Actions secret.
-- Workflow uses `contents: read` permission by default.
+- GitHub Release uploads use the built-in workflow token with `contents: write`.
+- `GH_PAT` is used for updating the memory secret and for external workflow dispatch.
 - API credentials are scoped to required services only.
+- Keep generated archive repositories private unless you are certain you have permission to publish the archived files.
 
 ## Local Repository Contents
 
@@ -223,4 +238,4 @@ Practical note:
 
 ## License
 
-This project is licensed under the MIT License. See [LICENSE](/C:/Users/Admin/Downloads/nix/LICENSE).
+This project is licensed under the MIT License. See [LICENSE](LICENSE).
