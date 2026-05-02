@@ -108,6 +108,7 @@ Optional if you later re-enable third-party mirrors:
 - `TERABOX_BROWSER_ID`: Optional TeraBox `browserid` cookie value from your logged-in browser session.
 - `TERABOX_REMOTE_DIR`: Target folder in TeraBox. If omitted, upload goes to `/nix`.
 - `TERABOX_BDSTOKEN`: Optional TeraBox token if your session requires it.
+- `DDOWNLOAD_API_KEY`: DDownload API key.
 
 ## Required Token Permissions
 
@@ -139,7 +140,7 @@ Version sorting:
 - This workflow intentionally supports frequent re-runs.
 - The primary archive target is private GitHub Releases.
 - Third-party mirror code is still present, but `UDROP_ENABLED`, `MEGA_ENABLED`, `DDOWNLOAD_ENABLED`, and `TERABOX_ENABLED` are disabled by default.
-- If you later re-enable uDrop or MEGA, those steps still contain their destination-side existence checks.
+- If you later re-enable uDrop, MEGA, or DDownload, those steps still contain their destination-side existence checks.
 - The TeraBox integration uses an unofficial reverse-engineered client and may break if TeraBox changes its web API.
 - State is private (secret-based), not committed to a branch.
 - External scheduling via `cron-job.org` is preferred for better timing precision than GitHub's native scheduler.
