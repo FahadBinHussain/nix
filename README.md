@@ -46,7 +46,6 @@ This repository runs an automated sync workflow for one Microsoft Store app:
 Workflow file: [auto-udrop-updater.yml](.github/workflows/auto-udrop-updater.yml)
 
 Triggers:
-- `push`
 - `workflow_dispatch` (manual)
 
 External schedule:
@@ -188,8 +187,8 @@ Expected success response:
 - `204 No Content`
 
 Practical note:
-- `push` events still trigger the workflow independently.
-- `cron-job.org` only replaces the old GitHub `schedule` trigger.
+- `push` events do not trigger the workflow.
+- `cron-job.org` triggers the workflow through `workflow_dispatch`.
 
 ## Troubleshooting
 

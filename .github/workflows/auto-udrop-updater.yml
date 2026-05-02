@@ -1,7 +1,6 @@
 name: Nix - Official Mirror
 
 on:
-  push:
   workflow_dispatch:
 
 concurrency:
