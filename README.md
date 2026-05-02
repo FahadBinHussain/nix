@@ -197,8 +197,14 @@ Practical note:
 
 ### DanStore API returns empty/403
 - Usually transient or anti-bot behavior.
-- Retry workflow.
+- The workflow retries the DanStore request before failing.
+- Retry the workflow later if all attempts still fail.
 - Ensure request headers in workflow were not removed.
+
+### DanStore API times out
+- This is usually a temporary DanStore, Vercel, or GitHub runner network issue.
+- It is not caused by using this repository as a template.
+- The workflow retries with backoff before failing the run.
 
 ### uDrop auth failed
 - Verify `UDROP_KEY1` and `UDROP_KEY2`.

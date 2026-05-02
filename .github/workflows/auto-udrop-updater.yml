@@ -108,11 +108,32 @@ jobs:
               "Origin" = "https://danstore-ms.vercel.app"
           }
 
-          try {
-              $resp = Invoke-RestMethod -Uri $apiUrl -Method Get -Headers $headers -TimeoutSec 60
-          } catch {
-              Write-Host "Error: DanStore API request failed: $($_.Exception.Message)"
-              exit 1
+          $resp = $null
+          $maxAttempts = 4
+
+          for ($attempt = 1; $attempt -le $maxAttempts; $attempt++) {
+              try {
+                  Write-Host "DanStore API attempt $attempt of $maxAttempts..."
+                  $resp = Invoke-RestMethod -Uri $apiUrl -Method Get -Headers $headers -TimeoutSec 90
+
+                  if (-not $resp -or -not $resp.packages -or $resp.packages.Count -eq 0) {
+                      throw "No packages returned by DanStore API."
+                  }
+
+                  break
+              } catch {
+                  $message = $_.Exception.Message
+                  Write-Host "DanStore API attempt $attempt failed: $message"
+
+                  if ($attempt -ge $maxAttempts) {
+                      Write-Host "Error: DanStore API request failed after $maxAttempts attempts."
+                      exit 1
+                  }
+
+                  $delaySeconds = [Math]::Min(60, 15 * $attempt)
+                  Write-Host "Waiting $delaySeconds seconds before retry..."
+                  Start-Sleep -Seconds $delaySeconds
+              }
           }
 
           if (-not $resp -or -not $resp.packages -or $resp.packages.Count -eq 0) {
