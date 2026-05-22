@@ -4,9 +4,7 @@ Private Microsoft Store app archive template powered by GitHub Actions.
 
 Nix checks a Microsoft Store product through the DanStore API, picks the newest suitable package, and archives new builds as private GitHub Release assets. It is designed for personal backup workflows where the generated archive repository should stay private.
 
-<p align="center">
-  <img src="assets/readme/project-pulse.svg" alt="Nix project pulse: one GitHub Actions archive workflow with private releases, secret-backed state, and cron-ready dispatches" />
-</p>
+![Repobeats analytics image](https://repobeats.axiom.co/api/embed/bceea57b5a3ae5d1f5afae384a8494ccc575e27a.svg "Repobeats analytics image")
 
 > [!IMPORTANT]
 > This project does not grant permission to redistribute Microsoft Store apps, installers, packages, or binaries. Keep generated archive repositories private unless you are certain you have the right to publish the archived files.
