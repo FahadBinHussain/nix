@@ -1,10 +1,23 @@
-# Nix
+<p align="center">
+  <img src="assets/readme/nix-logo.svg" alt="Nix logo" width="112">
+</p>
 
-Private Microsoft Store app archive template powered by GitHub Actions.
+<h1 align="center">Nix</h1>
+
+---
+
+<p align="center">
+  <strong>Private Microsoft Store app archive template powered by GitHub Actions.</strong>
+</p>
+
+<p align="center">
+  <a href=".github/workflows/auto-udrop-updater.yml"><img alt="workflow manual sync" src="https://img.shields.io/badge/workflow-manual%20sync-2088FF?style=flat&logo=githubactions&logoColor=white"></a>
+  <a href="LICENSE"><img alt="license MIT" src="https://img.shields.io/badge/license-MIT-40c057?style=flat"></a>
+  <img alt="private release archive" src="https://img.shields.io/badge/archive-private%20releases-7c3aed?style=flat">
+  <img alt="DanStore API source" src="https://img.shields.io/badge/source-DanStore%20API-111827?style=flat">
+</p>
 
 Nix checks a Microsoft Store product through the DanStore API, picks the newest suitable package, and archives new builds as private GitHub Release assets. It is designed for personal backup workflows where the generated archive repository should stay private.
-
-![Repobeats analytics image](https://repobeats.axiom.co/api/embed/bceea57b5a3ae5d1f5afae384a8494ccc575e27a.svg "Repobeats analytics image")
 
 > [!IMPORTANT]
 > This project does not grant permission to redistribute Microsoft Store apps, installers, packages, or binaries. Keep generated archive repositories private unless you are certain you have the right to publish the archived files.
@@ -160,6 +173,10 @@ userinput.py
 - Store sync state in GitHub Secrets, not in files.
 - Use fine-grained tokens scoped to one archive repo.
 - Review third-party mirror steps before enabling them.
+
+## Repository Stats
+
+![Repobeats analytics image](https://repobeats.axiom.co/api/embed/bceea57b5a3ae5d1f5afae384a8494ccc575e27a.svg "Repobeats analytics image")
 
 ## Contributors
 
