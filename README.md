@@ -1,247 +1,160 @@
-# Nix - Private App Archive Template
+# Nix
 
-Template repository for creating a private Microsoft Store app archive.
+Private Microsoft Store app archive template powered by GitHub Actions.
 
-Use this repo as a template, create your generated repository as **private**, and let GitHub Actions save each detected app version as a private GitHub Release asset.
+Nix checks a Microsoft Store product through the DanStore API, picks the newest suitable package, and archives new builds as private GitHub Release assets. It is designed for personal backup workflows where the generated archive repository should stay private.
 
-This project is designed for personal archival. It does not grant permission to redistribute proprietary apps, installers, packages, or binaries. If you make your generated repository public or publish archived files elsewhere, you are responsible for that choice.
+> [!IMPORTANT]
+> This project does not grant permission to redistribute Microsoft Store apps, installers, packages, or binaries. Keep generated archive repositories private unless you are certain you have the right to publish the archived files.
 
-## Template Usage
+## What It Does
 
-Recommended setup:
+- Resolves the latest package metadata for a configured Microsoft Store `PRODUCT_ID`.
+- Prefers bundle packages, then falls back to x64 or neutral app packages.
+- Skips duplicate work with a secret-backed memory marker.
+- Archives new packages to private GitHub Releases.
+- Can be triggered manually or from an external scheduler such as `cron-job.org`.
+- Keeps optional mirror integrations in the workflow, disabled by default.
+
+## How It Works
+
+The workflow lives at `.github/workflows/auto-udrop-updater.yml`.
+
+1. Read the last processed build from `NIX_LAST_VERSION`.
+2. Query DanStore for package metadata.
+3. Select the best downloadable package candidate.
+4. Compare the selected package against the stored marker.
+5. Download only when the package is new.
+6. Create or update a GitHub Release for the package version.
+7. Upload the package as a release asset.
+8. Update `NIX_LAST_VERSION` so the next run is idempotent.
+
+The workflow is locked with GitHub Actions concurrency, so repeated triggers on the same branch do not race each other.
+
+## Quick Start
 
 1. Click **Use this template** on GitHub.
-2. Create a new repository from the template.
-3. Set the new repository visibility to **Private**.
-4. Add the required secrets listed below.
-5. Run the workflow manually or trigger it from `cron-job.org`.
+2. Create the generated repository as **private**.
+3. Add the required repository secrets.
+4. Run **Nix - Official Mirror** from the Actions tab.
+5. Confirm the generated GitHub Release contains the package asset.
 
-Why use a template instead of a fork:
-
-- A generated repository can be private from the start.
-- GitHub shows `generated from <template-owner>/<template-repo>` on the generated repo.
-- The generated repo starts as its own archive, without carrying the template's full git history.
-
-## What This Project Does
-
-Production-ready GitHub Actions pipeline that:
-- resolves the latest Microsoft Store package for a target `PRODUCT_ID` via DanStore API,
-- prevents duplicate processing using a private memory marker,
-- archives new builds to private GitHub Releases,
-- keeps optional third-party mirror code in the repo behind disabled flags,
-- stores sync state in private GitHub Secrets.
-
-This repository runs an automated sync workflow for one Microsoft Store app:
-
-1. Query latest package metadata from `danstore-ms.vercel.app`.
-2. Select the best package candidate (bundle preferred, x64/neutral fallback).
-3. Check if this build was already processed (secret-based memory marker).
-4. Download package only when required.
-5. Create or update a private GitHub Release for that version.
-6. Upload the package as a release asset.
-7. Update private memory marker (`NIX_LAST_VERSION`) to avoid reprocessing.
-
-## Workflow Triggers
-
-Workflow file: [auto-udrop-updater.yml](.github/workflows/auto-udrop-updater.yml)
-
-Triggers:
-- `workflow_dispatch` (manual)
-
-External schedule:
-- `cron-job.org` is recommended for precise timed runs.
-- The workflow is triggered remotely through GitHub's `workflow_dispatch` API.
-
-Concurrency:
-- One run per branch at a time (`cancel-in-progress: true`) to reduce race conditions.
-
-## Architecture
-
-### Data Sources
-- Package metadata: DanStore API
-  - `GET /api/packages?id=<PRODUCT_ID>&type=ProductId&environment=Production`
-- Primary archive: GitHub Releases
-- Optional mirror code kept in workflow, disabled by default:
-  - uDrop API v2
-  - MEGA via MEGAcmd
-  - TeraBox via `terabox-upload-tool`
-  - DDownload API
-
-### State Management
-- Persistent marker is stored in GitHub Secret: `NIX_LAST_VERSION`
-- Marker format:
-  - `version|filename` (preferred)
-  - Backward-compatible with single-value legacy markers.
-
-### Idempotency Strategy
-- Layer 1: Compare candidate against `NIX_LAST_VERSION`.
-- Layer 2: Use a release tag derived from version or filename.
-- Layer 3: Concurrency lock for overlapping runs.
-
-This combination is what makes repeated runs safe.
+Using a template is preferred over forking because the archive repository starts private, independent, and free of template history.
 
 ## Required Secrets
 
-Configure these in:
-`Settings -> Secrets and variables -> Actions`
+Add these under **Settings -> Secrets and variables -> Actions**.
 
-Required:
-- `PRODUCT_ID`: Microsoft Store Product ID (example: `9WZDNCRFJ3TJ`)
-- `GH_PAT`: GitHub token used for both:
-  - updating `NIX_LAST_VERSION`
-  - external `workflow_dispatch` calls from `cron-job.org`
+| Secret | Required | Purpose |
+| --- | --- | --- |
+| `PRODUCT_ID` | Yes | Microsoft Store product ID to archive. |
+| `GH_PAT` | Yes | Fine-grained token used to update `NIX_LAST_VERSION` and trigger the workflow externally. |
+| `NIX_LAST_VERSION` | Recommended | Last processed marker. Set to `none` for the first run. |
 
-Optional (recommended):
-- `NIX_LAST_VERSION`: Initial sync marker (set `none` for first run).
+Recommended `GH_PAT` permissions:
 
-Optional if you later re-enable third-party mirrors:
-- `UDROP_KEY1`: uDrop API key 1
-- `UDROP_KEY2`: uDrop API key 2
-- `UDROP_FOLDER_ID`: Target uDrop folder ID. If omitted, root folder is used.
-- `MEGA_EMAIL`: MEGA account email
-- `MEGA_PASSWORD`: MEGA account password
-- `MEGA_REMOTE_DIR`: Target folder in MEGA. If omitted, upload goes to `/`.
-- `TERABOX_NDUS`: TeraBox `ndus` cookie value from your logged-in browser session.
-- `TERABOX_JSTOKEN`: TeraBox `jsToken` value from browser network requests.
-- `TERABOX_APP_ID`: Usually `250528`. Set it explicitly if your session uses a different value.
-- `TERABOX_BROWSER_ID`: Optional TeraBox `browserid` cookie value from your logged-in browser session.
-- `TERABOX_REMOTE_DIR`: Target folder in TeraBox. If omitted, upload goes to `/nix`.
-- `TERABOX_BDSTOKEN`: Optional TeraBox token if your session requires it.
-- `DDOWNLOAD_API_KEY`: DDownload API key.
+- Repository access: this generated archive repo only
+- `Actions: Write`
+- `Secrets: Write`
 
-## Required Token Permissions
+## Optional Mirror Secrets
 
-`GH_PAT` must allow both secret updates and remote workflow dispatch for this repository.
+The workflow still contains mirror support, but all mirror flags are disabled by default:
 
-Recommended fine-grained PAT scope:
-- Repository access: this repo only
-- Permissions:
-  - `Actions: Write`
-  - `Secrets: Write`
+```yaml
+UDROP_ENABLED: 'false'
+TERABOX_ENABLED: 'false'
+MEGA_ENABLED: 'false'
+DDOWNLOAD_ENABLED: 'false'
+```
 
-If you use the same PAT in both GitHub Actions and `cron-job.org`, these combined permissions cover both use cases.
+Only add these secrets if you intentionally re-enable the related mirror steps.
 
-## Package Selection Logic
+| Service | Secrets |
+| --- | --- |
+| uDrop | `UDROP_KEY1`, `UDROP_KEY2`, `UDROP_FOLDER_ID` |
+| MEGA | `MEGA_EMAIL`, `MEGA_PASSWORD`, `MEGA_REMOTE_DIR` |
+| TeraBox | `TERABOX_NDUS`, `TERABOX_JSTOKEN`, `TERABOX_APP_ID`, `TERABOX_BROWSER_ID`, `TERABOX_REMOTE_DIR`, `TERABOX_BDSTOKEN` |
+| DDownload | `DDOWNLOAD_API_KEY` |
 
-Priority order:
-1. `MSIXBUNDLE` / `APPXBUNDLE` / `EMSIXBUNDLE`
-2. `MSIX` / `APPX`
+> [!NOTE]
+> TeraBox support uses an unofficial reverse-engineered client and may break if TeraBox changes its web API.
 
-Architecture filter:
+## Package Selection
+
+Candidate priority:
+
+1. `MSIXBUNDLE`, `APPXBUNDLE`, `EMSIXBUNDLE`
+2. `MSIX`, `APPX`
+
+Allowed architectures:
+
 - `neutral`
 - `x64`
 
-Version sorting:
-- Highest semantic version first (when parseable).
+When versions are parseable, the workflow sorts by highest semantic version first.
 
-## Operational Notes
+## Triggering From cron-job.org
 
-- This workflow intentionally supports frequent re-runs.
-- The primary archive target is private GitHub Releases.
-- Third-party mirror code is still present, but `UDROP_ENABLED`, `MEGA_ENABLED`, `DDOWNLOAD_ENABLED`, and `TERABOX_ENABLED` are disabled by default.
-- If you later re-enable uDrop, MEGA, or DDownload, those steps still contain their destination-side existence checks.
-- The TeraBox integration uses an unofficial reverse-engineered client and may break if TeraBox changes its web API.
-- State is private (secret-based), not committed to a branch.
-- External scheduling via `cron-job.org` is preferred for better timing precision than GitHub's native scheduler.
+GitHub's native schedule can drift, so `cron-job.org` is useful for exact timed runs.
 
-## How To Use
+Request:
 
-1. Generate a private repository from this template.
-2. Add required secrets.
-3. Configure `cron-job.org` or trigger manually.
-4. Check Actions logs for:
-   - package resolution
-   - dedupe decision
-   - upload status
-   - memory marker update
+```http
+POST https://api.github.com/repos/OWNER/REPO/actions/workflows/auto-udrop-updater.yml/dispatches
+```
 
-## cron-job.org Setup
+Headers:
 
-Use `cron-job.org` to trigger the workflow on an exact schedule.
+```http
+Authorization: Bearer YOUR_GH_PAT
+Accept: application/vnd.github+json
+X-GitHub-Api-Version: 2022-11-28
+Content-Type: application/json
+```
 
-Request configuration:
-- URL:
-  `https://api.github.com/repos/OWNER/REPO/actions/workflows/auto-udrop-updater.yml/dispatches`
-- Method:
-  `POST`
-- Content-Type:
-  `application/json`
-- Request body:
+Body:
 
 ```json
 {"ref":"main"}
 ```
 
-Headers:
-- `Authorization: Bearer YOUR_GH_PAT`
-- `Accept: application/vnd.github+json`
-- `X-GitHub-Api-Version: 2022-11-28`
+Expected response:
 
-Suggested Bangladesh schedule:
-- `06:00`
-- `12:00`
-- `18:00`
-- `00:00`
-
-Expected success response:
-- `204 No Content`
-
-Practical note:
-- `push` events do not trigger the workflow.
-- `cron-job.org` triggers the workflow through `workflow_dispatch`.
+```text
+204 No Content
+```
 
 ## Troubleshooting
 
-### `PRODUCT_ID secret is empty`
-- Set `PRODUCT_ID` in repo secrets.
+| Problem | What to check |
+| --- | --- |
+| `PRODUCT_ID secret is empty` | Add `PRODUCT_ID` in repository Actions secrets. |
+| DanStore returns empty, 403, or times out | Retry later. The workflow already retries with browser-like headers and backoff. |
+| The same package uploads again | Check `NIX_LAST_VERSION`, release assets, and whether the workflow is running from the latest YAML. |
+| Memory secret does not update | Confirm `GH_PAT` exists and has `Secrets: Write` permission for the repo. |
+| cron-job.org returns 401 or 403 | Rotate/check the token and confirm `Actions: Write` permission. |
+| cron-job.org returns 404 | Confirm the owner, repo, branch, and workflow filename in the dispatch URL. |
 
-### DanStore API returns empty/403
-- Usually transient or anti-bot behavior.
-- The workflow retries the DanStore request before failing.
-- Retry the workflow later if all attempts still fail.
-- Ensure request headers in workflow were not removed.
+## Repository Layout
 
-### DanStore API times out
-- This is usually a temporary DanStore, Vercel, or GitHub runner network issue.
-- It is not caused by using this repository as a template.
-- The workflow retries with backoff before failing the run.
+```text
+.github/
+  scripts/
+    terabox-sync.cjs
+    test-udrop.mjs
+    test-udrop.ps1
+  workflows/
+    auto-udrop-updater.yml
+danstore_bundle.js
+danstore_bundle.js.map
+userinput.py
+```
 
-### uDrop auth failed
-- Verify `UDROP_KEY1` and `UDROP_KEY2`.
-- Check account/API status in uDrop dashboard.
+## Security Notes
 
-### Duplicate file still appears
-- Confirm workflow run used current YAML revision.
-- Ensure `UDROP_FOLDER_ID` matches the folder you inspect in uDrop UI.
-- Check logs for:
-  - `File already exists on uDrop...`
-  - `SHOULD_UPDATE_MEMORY=true`
-
-### Memory secret not updating
-- Verify `GH_PAT` exists and has permission to set repository secrets.
-- Check `Update Memory Secret` step logs.
-
-### cron-job.org trigger fails
-- Verify the PAT still has `Actions: Write` and `Secrets: Write`.
-- Confirm the request body is exactly `{"ref":"main"}`.
-- Confirm the workflow filename in the URL is `auto-udrop-updater.yml`.
-- Check for GitHub API response codes such as `401`, `403`, or `404`.
-
-## Security Model
-
-- Secrets are never stored in repository files.
-- Sync memory is stored in private GitHub Actions secret.
-- GitHub Release uploads use the built-in workflow token with `contents: write`.
-- `GH_PAT` is used for updating the memory secret and for external workflow dispatch.
-- API credentials are scoped to required services only.
-- Keep generated archive repositories private unless you are certain you have permission to publish the archived files.
-
-## Local Repository Contents
-
-- `.github/workflows/auto-udrop-updater.yml` - sync pipeline
-- `LICENSE` - MIT license
-- `README.md` - project documentation
-
-## License
-
-This project is licensed under the MIT License. See [LICENSE](LICENSE).
+- Do not commit package credentials, API keys, cookies, or download tokens.
+- Keep generated archive repositories private.
+- Store sync state in GitHub Secrets, not in files.
+- Use fine-grained tokens scoped to one archive repo.
+- Review third-party mirror steps before enabling them.
