@@ -31,6 +31,32 @@ Nix checks a Microsoft Store product through the DanStore API, picks the newest 
 - Can be triggered manually or from an external scheduler such as `cron-job.org`.
 - Keeps optional mirror integrations in the workflow, disabled by default.
 
+## Comparison
+
+`✅` means the tool is built around that capability. `partial` means it has a related feature, but
+not the same workflow or depth. `-` means it is not the point of that tool.
+
+| Capability | Nix | [Microsoft Store / winget](https://learn.microsoft.com/en-us/windows/package-manager/winget/) | [rg-adguard Store link generator](https://store.rg-adguard.net/) | [StoreLib scripts](https://www.nuget.org/packages/StoreLib) | Generic GitHub Actions downloader |
+| --- | --- | --- | --- | --- | --- |
+| Resolve Store packages from a product ID | ✅ | ✅ | ✅ | ✅ | - |
+| Pick newest suitable bundle/x64/neutral package | ✅ | ✅ | partial | partial | - |
+| Install or update apps on the current Windows machine | - | ✅ | - | partial | - |
+| Archive package files as private GitHub Releases | ✅ | - | - | - | partial |
+| Idempotent "last processed" memory | ✅ | partial | - | script-dependent | partial |
+| Manual workflow dispatch and external scheduler trigger | ✅ | - | - | script-dependent | partial |
+| Optional mirror-provider steps kept disabled by default | ✅ | - | - | - | script-dependent |
+| Fine-grained token and secret-based operation | ✅ | partial | - | script-dependent | partial |
+| User-friendly official app management | - | ✅ | partial | - | - |
+| Open template for personal private archives | ✅ | - | - | partial | ✅ |
+
+The closest overlap is not a normal package manager. `winget` and the Microsoft Store are
+for installing and updating apps on a Windows machine. rg-adguard and StoreLib-style scripts
+help discover direct package links. Nix is narrower: it turns that discovery into a repeatable,
+private archive workflow with GitHub Releases and a secret-backed processed marker.
+
+The big caveat is rights and policy. Nix is useful for personal backup workflows, but it is not
+a redistribution system. The README intentionally keeps the private-archive warning near the top.
+
 ## How It Works
 
 The workflow lives at `.github/workflows/auto-udrop-updater.yml`.
